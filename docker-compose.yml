@@ -1,0 +1,32 @@
+services:
+  web:
+    build: .
+    restart: unless-stopped
+    environment:
+      SELF_HOSTED: "true"
+      NEXT_PUBLIC_SITE_ORIGIN: ${NEXT_PUBLIC_SITE_ORIGIN:-http://localhost:3000}
+      ANALYSIS_SERVICE_URL: http://analysis:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      analysis:
+        condition: service_healthy
+
+  analysis:
+    build: ./analysis-service
+    restart: unless-stopped
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  tunnel:
+    image: cloudflare/cloudflared:latest
+    profiles: ["domain"]
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN}
+    depends_on:
+      - web

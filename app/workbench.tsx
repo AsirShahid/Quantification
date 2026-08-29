@@ -17,10 +17,12 @@ import {
   type DecodedImage,
   type RoiRect,
 } from './lib/image-analysis';
+import { applyChannelViewInPlace, prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
 
 type ViewMode = 'overlay' | 'original' | 'mask';
 type OutsideMode = 'exclude' | 'report';
 type SignalChannel = 'red' | 'green' | 'blue' | 'grayscale';
+type DisplayChannel = 'composite' | 'red' | 'green' | 'blue';
 
 const STAIN_OPTIONS = [
   'Sirius Red',
@@ -81,7 +83,10 @@ function formatBytes(value: number) {
 
 export default function Workbench({ userName }: { userName: string }) {
   const fileInput = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const openRequestId = useRef(0);
+  const analysisRequestId = useRef(0);
   const [sampleId, setSampleId] = useState('i901 · tile_x003_y013');
   const [sourceName, setSourceName] = useState('tile_x003_y013.jp2');
   const [sourceSize, setSourceSize] = useState(0);
@@ -101,6 +106,9 @@ export default function Workbench({ userName }: { userName: string }) {
   const [view, setView] = useState<ViewMode>('overlay');
   const [loading, setLoading] = useState(true);
   const [draggingFile, setDraggingFile] = useState(false);
+  const [folderFiles, setFolderFiles] = useState<File[]>([]);
+  const [folderIndex, setFolderIndex] = useState(0);
+  const [displayChannel, setDisplayChannel] = useState<DisplayChannel>('composite');
   const [message, setMessage] = useState('Loading the bundled Sirius Red reference tile…');
   const [error, setError] = useState('');
 
@@ -116,6 +124,12 @@ export default function Workbench({ userName }: { userName: string }) {
     [userName],
   );
 
+  const invalidateAnalysis = () => {
+    analysisRequestId.current++;
+    setResult(null);
+    if (image) setLoading(false);
+  };
+
   const runAnalysis = useCallback(
     (decoded = image) => {
       if (!decoded) return;
@@ -124,9 +138,11 @@ export default function Workbench({ userName }: { userName: string }) {
         setMessage(`Draw one or more ${structure.toLowerCase()} regions on the image, then analyze.`);
         return;
       }
+      const requestId = ++analysisRequestId.current;
       setLoading(true);
       setError('');
       window.setTimeout(() => {
+        if (requestId !== analysisRequestId.current) return;
         try {
           const nextResult = analyzeImage(decoded, {
             stain,
@@ -139,6 +155,7 @@ export default function Workbench({ userName }: { userName: string }) {
             structure,
             rois,
           });
+          if (requestId !== analysisRequestId.current) return;
           setResult(nextResult);
           setMessage(
             outsideMode === 'report'
@@ -146,48 +163,44 @@ export default function Workbench({ userName }: { userName: string }) {
               : 'Analysis complete. Review the overlay before exporting.',
           );
         } catch (analysisError) {
-          setError(analysisError instanceof Error ? analysisError.message : 'The image could not be analyzed.');
+          if (requestId === analysisRequestId.current) setError(analysisError instanceof Error ? analysisError.message : 'The image could not be analyzed.');
         } finally {
-          setLoading(false);
+          if (requestId === analysisRequestId.current) setLoading(false);
         }
       }, 20);
     },
     [image, stain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance, outsideMode, structure, rois],
   );
 
-  const openFile = useCallback(async (file: File, preserveSampleId = false) => {
+  const openFile = useCallback(async (file: File, preserveSampleId = false, displayName = file.name) => {
+    const requestId = ++openRequestId.current;
+    analysisRequestId.current++;
     setLoading(true);
     setError('');
+    setResult(null);
+    setImage(null);
+    setDisplayChannel('composite');
+    setSourceName(preserveSampleId ? 'tile_x003_y013.jp2' : displayName);
+    setSourceSize(preserveSampleId ? 16_000_000 : file.size);
     setMessage(`Opening ${file.name}…`);
     try {
       const decoded = await decodeMicroscopyFile(file);
+      if (requestId !== openRequestId.current) return;
       setImage(decoded);
-      setSourceName(preserveSampleId ? 'tile_x003_y013.jp2' : file.name);
-      setSourceSize(preserveSampleId ? 16_000_000 : file.size);
-      if (!preserveSampleId) setSampleId(stripExtension(file.name));
+      if (!preserveSampleId) setSampleId(stripExtension(displayName).replaceAll('/', ' · '));
       setRois([]);
       if (preserveSampleId) {
-        setResult(analyzeImage(decoded, {
-          stain: 'Sirius Red',
-          signalChannel: 'red',
-          minThreshold: 6,
-          maxThreshold: 255,
-          removeBackground: true,
-          backgroundTolerance: 18,
-          outsideMode: 'exclude',
-          structure: 'Whole tissue',
-          rois: [],
-        }));
-        setMessage('Bundled reference analyzed. Adjust the threshold to see the mask and measurements change.');
+        setMessage('Bundled reference ready. Press Analyze image when you want to run the pixel analysis.');
       } else {
-        setResult(null);
         setMessage('Image ready. Adjust the settings, then analyze.');
       }
     } catch (openError) {
-      setError(openError instanceof Error ? openError.message : 'The file could not be opened.');
-      setMessage('Choose another file or use the self-hosted ND2 companion.');
+      if (requestId === openRequestId.current) {
+        setError(openError instanceof Error ? openError.message : 'The file could not be opened.');
+        setMessage('Choose another file or use the self-hosted ND2 companion.');
+      }
     } finally {
-      setLoading(false);
+      if (requestId === openRequestId.current) setLoading(false);
     }
   }, []);
 
@@ -218,8 +231,9 @@ export default function Workbench({ userName }: { userName: string }) {
     const context = canvas.getContext('2d');
     if (!context) return;
 
-    const source = result?.displayRgba ?? image.rgba;
+    const source = result && displayChannel === 'composite' ? result.displayRgba : image.rgba;
     const pixels = new Uint8ClampedArray(source);
+    applyChannelViewInPlace(pixels, displayChannel);
     if (result && view !== 'original') {
       for (let i = 0; i < result.positiveMask.length; i++) {
         const p = i * 4;
@@ -260,12 +274,19 @@ export default function Workbench({ userName }: { userName: string }) {
       context.setLineDash([Math.max(5, image.width / 180), Math.max(4, image.width / 260)]);
     });
     context.restore();
-  }, [image, result, view, rois, draftRoi]);
+  }, [image, displayChannel, result, view, rois, draftRoi]);
 
   const handleFiles = useCallback(
     (files: FileList | File[]) => {
-      const file = files[0];
-      if (file) void openFile(file);
+      const prepared = prepareMicroscopyFiles(files);
+      if (!prepared.length) {
+        setError('No ND2, TIFF, or JP2 files were found.');
+        return;
+      }
+      setFolderFiles(prepared);
+      setFolderIndex(0);
+      const first = prepared[0];
+      void openFile(first, false, first.webkitRelativePath || first.name);
     },
     [openFile],
   );
@@ -275,9 +296,22 @@ export default function Workbench({ userName }: { userName: string }) {
     event.target.value = '';
   };
 
+  const onFolderChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files) handleFiles(event.target.files);
+    event.target.value = '';
+  };
+
+  const openFolderFile = (index: number) => {
+    const file = folderFiles[index];
+    if (!file || loading) return;
+    setFolderIndex(index);
+    void openFile(file, false, file.webkitRelativePath || file.name);
+  };
+
   const onDrop = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault();
     setDraggingFile(false);
+    if (loading) return;
     handleFiles(event.dataTransfer.files);
   };
 
@@ -314,7 +348,7 @@ export default function Workbench({ userName }: { userName: string }) {
     };
     if (normalized.width > 5 && normalized.height > 5) setRois((current) => [...current, normalized]);
     setDraftRoi(null);
-    setResult(null);
+    invalidateAnalysis();
   };
 
   const chooseStain = (value: string) => {
@@ -323,19 +357,26 @@ export default function Workbench({ userName }: { userName: string }) {
     setSignalChannel(DEFAULT_CHANNELS[value] ?? 'red');
     setMinThreshold(minimum);
     setMaxThreshold(maximum);
-    setResult(null);
+    invalidateAnalysis();
   };
 
   const chooseStructure = (value: string) => {
     setStructure(value);
     setRois([]);
     setDrawing(value !== 'Whole tissue');
-    setResult(null);
+    invalidateAnalysis();
     setMessage(
       value === 'Whole tissue'
         ? 'Whole-tissue mode uses the automatically separated tissue area.'
         : `Draw boxes around every ${value.toLowerCase()} region you want included.`,
     );
+  };
+
+  const chooseDisplayChannel = (channel: DisplayChannel) => {
+    setDisplayChannel(channel);
+    invalidateAnalysis();
+    if (channel !== 'composite') setSignalChannel(channel);
+    setMessage(channel === 'composite' ? 'Composite view selected.' : `${channel[0].toUpperCase()}${channel.slice(1)} channel selected.`);
   };
 
   const exportCsv = () => {
@@ -371,7 +412,7 @@ export default function Workbench({ userName }: { userName: string }) {
 
       <section className="workspace-heading">
         <div><p className="eyebrow">New analysis</p><h1>Turn stained tissue into auditable measurements.</h1><p className="lede">Upload a microscopy image, separate tissue from slide background, select any structure-specific regions, then review every counted pixel.</p></div>
-        <div className="format-badges"><span>TIFF</span><span>JP2</span><span>ND2 self-host</span></div>
+        <div className="format-badges"><span>TIFF</span><span>JP2</span><span>ND2 self-host</span><span>Folders</span></div>
       </section>
 
       <section className="workbench-grid">
@@ -383,30 +424,39 @@ export default function Workbench({ userName }: { userName: string }) {
           <label className="field-label" htmlFor="stain">Staining</label>
           <select id="stain" className="select-input" value={stain} onChange={(event) => chooseStain(event.target.value)}>{STAIN_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
 
-          {stain.includes('(IF)') && <><label className="field-label" htmlFor="signal-channel">Positive signal channel</label><select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { setSignalChannel(event.target.value as SignalChannel); setResult(null); }}><option value="red">Red</option><option value="green">Green</option><option value="blue">Blue</option><option value="grayscale">Grayscale</option></select></>}
+          {stain.includes('(IF)') && <><label className="field-label" htmlFor="signal-channel">Positive signal channel</label><select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { setSignalChannel(event.target.value as SignalChannel); invalidateAnalysis(); }}><option value="red">Red</option><option value="green">Green</option><option value="blue">Blue</option><option value="grayscale">Grayscale</option></select></>}
 
           <label className="field-label" htmlFor="structure">Structure to quantify</label>
           <select id="structure" className="select-input" value={structure} onChange={(event) => chooseStructure(event.target.value)}>{STRUCTURE_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
 
-          {structure !== 'Whole tissue' && <div className="roi-controls"><button type="button" className={drawing ? 'active' : ''} onClick={() => setDrawing((current) => !current)}>{drawing ? 'Drawing regions' : 'Draw regions'}</button><button type="button" onClick={() => { setRois([]); setResult(null); }}>Clear ({rois.length})</button></div>}
+          {structure !== 'Whole tissue' && <div className="roi-controls"><button type="button" className={drawing ? 'active' : ''} onClick={() => setDrawing((current) => !current)}>{drawing ? 'Drawing regions' : 'Draw regions'}</button><button type="button" onClick={() => { setRois([]); invalidateAnalysis(); }}>Clear ({rois.length})</button></div>}
 
-          <div className="switch-row"><div><strong>Remove slide background</strong><span>Border-connected area outside tissue</span></div><button type="button" className={`toggle ${removeBackground ? 'active' : ''}`} aria-pressed={removeBackground} onClick={() => { setRemoveBackground((current) => !current); setResult(null); }}><i /></button></div>
+          <div className="switch-row"><div><strong>Remove slide background</strong><span>Border-connected area outside tissue</span></div><button type="button" className={`toggle ${removeBackground ? 'active' : ''}`} aria-pressed={removeBackground} onClick={() => { setRemoveBackground((current) => !current); invalidateAnalysis(); }}><i /></button></div>
 
-          {removeBackground && <><label className="field-label compact" htmlFor="outside-mode">Outside-tissue handling</label><select id="outside-mode" className="select-input" value={outsideMode} onChange={(event) => { setOutsideMode(event.target.value as OutsideMode); setResult(null); }}><option value="exclude">Exclude from calculations</option><option value="report">Exclude and report separately</option></select><label className="field-label compact" htmlFor="background-tolerance">Background tolerance <span>{backgroundTolerance}</span></label><input id="background-tolerance" className="single-range" type="range" min="4" max="60" value={backgroundTolerance} onChange={(event) => { setBackgroundTolerance(Number(event.target.value)); setResult(null); }} /></>}
+          {removeBackground && <><label className="field-label compact" htmlFor="outside-mode">Outside-tissue handling</label><select id="outside-mode" className="select-input" value={outsideMode} onChange={(event) => { setOutsideMode(event.target.value as OutsideMode); invalidateAnalysis(); }}><option value="exclude">Exclude from calculations</option><option value="report">Exclude and report separately</option></select><label className="field-label compact" htmlFor="background-tolerance">Background tolerance <span>{backgroundTolerance}</span></label><input id="background-tolerance" className="single-range" type="range" min="4" max="60" value={backgroundTolerance} onChange={(event) => { setBackgroundTolerance(Number(event.target.value)); invalidateAnalysis(); }} /></>}
 
-          <div className="threshold-card"><div className="threshold-title"><strong>Positive stain threshold</strong><span>Manual</span></div><label htmlFor="minimum-threshold">Minimum <b>{minThreshold}</b></label><input id="minimum-threshold" className="single-range berry" type="range" min="0" max="255" value={minThreshold} onChange={(event) => { setMinThreshold(Math.min(Number(event.target.value), maxThreshold)); setResult(null); }} /><label htmlFor="maximum-threshold">Maximum <b>{maxThreshold}</b></label><input id="maximum-threshold" className="single-range berry" type="range" min="0" max="255" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.max(Number(event.target.value), minThreshold)); setResult(null); }} /></div>
+          <div className="threshold-card"><div className="threshold-title"><strong>Positive stain threshold</strong><span>Manual</span></div><label htmlFor="minimum-threshold">Minimum <b>{minThreshold}</b></label><input id="minimum-threshold" className="single-range berry" type="range" min="0" max="255" value={minThreshold} onChange={(event) => { setMinThreshold(Math.min(Number(event.target.value), maxThreshold)); invalidateAnalysis(); }} /><label htmlFor="maximum-threshold">Maximum <b>{maxThreshold}</b></label><input id="maximum-threshold" className="single-range berry" type="range" min="0" max="255" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.max(Number(event.target.value), minThreshold)); invalidateAnalysis(); }} /></div>
 
           <button type="button" className="primary-button" disabled={!image || loading || !sampleId.trim()} onClick={() => runAnalysis()}>{loading ? 'Working…' : 'Analyze image'} <span>→</span></button>
           <p className="validation-note">Research-use workflow. Thresholds and structure regions must be reviewed before statistical analysis.</p>
         </aside>
 
         <section className="image-stage">
-          <div className="stage-toolbar"><div className="file-chip" title={sourceName}><i /> {sourceName} <span>{formatBytes(sourceSize)}</span></div><div className="view-tabs" aria-label="Image view">{(['overlay', 'original', 'mask'] as ViewMode[]).map((option) => <button key={option} type="button" className={view === option ? 'active' : ''} onClick={() => setView(option)}>{option}</button>)}</div><button className="replace-button" type="button" onClick={() => fileInput.current?.click()}>Replace</button><input ref={fileInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" hidden onChange={onFileChange} /></div>
+          <div className="stage-toolbar">
+            <div className="file-chip" title={sourceName}><i /> {sourceName} <span>{formatBytes(sourceSize)}</span></div>
+            {folderFiles.length > 1 && <div className="folder-nav" aria-label="Folder image navigation"><button type="button" aria-label="Previous file" disabled={loading || folderIndex === 0} onClick={() => openFolderFile(folderIndex - 1)}>‹</button><span>{folderIndex + 1} / {folderFiles.length}</span><button type="button" aria-label="Next file" disabled={loading || folderIndex === folderFiles.length - 1} onClick={() => openFolderFile(folderIndex + 1)}>›</button></div>}
+            <div className="view-tabs" aria-label="Image view">{(['overlay', 'original', 'mask'] as ViewMode[]).map((option) => <button key={option} type="button" className={view === option ? 'active' : ''} onClick={() => setView(option)}>{option}</button>)}</div>
+            <div className="open-actions"><button className="replace-button" type="button" disabled={loading} onClick={() => fileInput.current?.click()}>Open file</button><button className="replace-button" type="button" disabled={loading} onClick={() => folderInput.current?.click()}>Open folder</button></div>
+            <input ref={fileInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" hidden onChange={onFileChange} />
+            <input ref={folderInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" multiple hidden onChange={onFolderChange} {...{ webkitdirectory: '', directory: '' }} />
+          </div>
+
+          {image && <div className="channel-bar" aria-label="Image channels"><b>C</b>{(['composite', 'red', 'green', 'blue'] as DisplayChannel[]).map((channel) => <button key={channel} type="button" disabled={loading} aria-label={`${channel} channel view`} aria-pressed={displayChannel === channel} className={displayChannel === channel ? 'active' : ''} onClick={() => chooseDisplayChannel(channel)}>{channel === 'composite' ? 'Composite' : channel[0].toUpperCase()}</button>)}</div>}
 
           <div className={`image-canvas ${draggingFile ? 'dragging' : ''} ${drawing ? 'drawing' : ''}`} onDragEnter={(event) => { event.preventDefault(); setDraggingFile(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDraggingFile(false)} onDrop={onDrop}>
             {image && <canvas ref={canvasRef} aria-label="Microscopy image analysis preview" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />}
-            {!image && <div className="empty-canvas"><strong>No image open</strong><span>Choose a TIFF, JP2, or ND2 file.</span></div>}
-            {(draggingFile || !image) && <button type="button" className="central-dropzone" onClick={() => fileInput.current?.click()}><strong>Drop ND2, TIFF, or JP2</strong><span>or choose a file</span></button>}
+            {!image && <div className="empty-canvas"><strong>No image open</strong><span>Choose a TIFF, JP2, ND2 file, or folder.</span></div>}
+            {(draggingFile || !image) && <button type="button" className="central-dropzone" disabled={loading} onClick={() => fileInput.current?.click()}><strong>Drop ND2, TIFF, or JP2</strong><span>or choose a file</span></button>}
             {image && <button type="button" className="dropzone" onClick={() => fileInput.current?.click()}><strong>Drop ND2, TIFF, or JP2</strong><span>or choose a file</span></button>}
             {drawing && <div className="drawing-hint">Drag on the image to add a region</div>}
             <div className="legend"><span><i className="positive" /> Positive stain</span><span><i className="structure" /> Selected region</span><span><i className="excluded" /> Excluded</span></div>

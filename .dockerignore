@@ -1,6 +1,58 @@
-node_modules
-dist
-.next
-.git
+# Deny by default: the root context is shared by the web and analysis builds.
+**
+
+# Build definitions and lockfiles.
+!Dockerfile
+!package.json
+!package-lock.json
+!env.d.ts
+!next.config.ts
+!tsconfig.json
+!vite.config.ts
+
+# Web build inputs only.
+!.openai/
+!.openai/hosting.json
+!app/
+!app/**
+app/**/*.test.*
+!public/
+!public/**
+!types/
+!types/**
+
+# Analysis build inputs only.
+!analysis-service/
+!analysis-service/Dockerfile
+!analysis-service/main.py
+!analysis-service/requirements.txt
+
+# Never send local state, credentials, generated output, VCS data, or docs.
 .env
-npm-debug.log
+.env.*
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.htpasswd
+**/secrets/**
+.git/
+.github/
+.hermes/
+.next/
+dist/
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.wrangler/
+coverage/
+.nyc_output/
+*.log
+README.md
+SELF_HOSTING.md
+scripts/

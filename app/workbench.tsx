@@ -17,12 +17,27 @@ import {
   type DecodedImage,
   type RoiRect,
 } from './lib/image-analysis';
+import {
+  analysisRecordToCsv,
+  buildAnalysisRecord,
+  type AnalysisRecord,
+  type AnalysisSettingsSnapshot,
+} from './lib/analysis-record';
 import { applyChannelViewInPlace, prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
 
 type ViewMode = 'overlay' | 'original' | 'mask';
 type OutsideMode = 'exclude' | 'report';
 type SignalChannel = 'red' | 'green' | 'blue' | 'grayscale';
 type DisplayChannel = 'composite' | 'red' | 'green' | 'blue';
+
+const SYNTHETIC_DEMO_NAME = 'synthetic-demo-tile.jpg';
+const DISPLAY_CHANNELS: DisplayChannel[] = ['composite', 'red', 'green', 'blue'];
+const SIGNAL_CHANNELS: { value: SignalChannel; label: string }[] = [
+  { value: 'red', label: 'Red' },
+  { value: 'green', label: 'Green' },
+  { value: 'blue', label: 'Blue' },
+  { value: 'grayscale', label: 'Grayscale' },
+];
 
 const STAIN_OPTIONS = [
   'Sirius Red',
@@ -76,22 +91,101 @@ function formatDecimal(value: number, digits = 2) {
 }
 
 function formatBytes(value: number) {
-  if (!value) return 'bundled example';
+  if (!value) return '0 B';
   if (value < 1_000_000) return `${(value / 1_000).toFixed(0)} KB`;
   return `${(value / 1_000_000).toFixed(1)} MB`;
+}
+
+function formatPlaneSelection(selection: DecodedImage['planeSelection']) {
+  const entries = Object.entries(selection);
+  return entries.length ? entries.map(([axis, value]) => `${axis}=${value}`).join(', ') : 'single image plane';
+}
+
+function stainScoreDescription(stain: string, signalChannel: SignalChannel) {
+  if (stain === 'Sirius Red') return 'Score = clamp(R − (G + B) / 2), integer 0–255.';
+  if (stain === 'PAS') return 'Score = clamp((R + B) / 2 − G), integer 0–255.';
+  if (stain === 'H&E — hematoxylin') return 'Score = clamp(B − (R + G) / 2 + 64), integer 0–255.';
+  if (stain === 'H&E — eosin') return 'Score = clamp((R + B) / 2 − G + 64), integer 0–255.';
+  if (stain.includes('(IF)')) return signalChannel === 'grayscale'
+    ? 'Score = mean of R, G, and B display components, integer 0–255.'
+    : `Score = ${signalChannel} display component intensity, integer 0–255.`;
+  return 'Score = mean of R, G, and B display components, integer 0–255.';
+}
+
+function errorMessage(value: unknown, fallback: string) {
+  return value instanceof Error && value.message.trim() ? value.message : fallback;
+}
+
+function safeExportName(sampleId: string) {
+  return sampleId.replace(/[^a-z0-9_-]+/gi, '_') || 'sample';
+}
+
+function downloadText(contents: string, type: string, filename: string) {
+  const url = URL.createObjectURL(new Blob([contents], { type }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.hidden = true;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function availableDisplayChannels(image: DecodedImage | null): DisplayChannel[] {
+  if (!image || image.channelCount >= 3) return DISPLAY_CHANNELS;
+  if (image.channelCount === 2) return ['composite', 'red', 'green'];
+  return ['composite'];
+}
+
+function availableSignalChannels(image: DecodedImage | null) {
+  if (!image || image.channelCount >= 3) return SIGNAL_CHANNELS;
+  if (image.channelCount === 2) return SIGNAL_CHANNELS.filter(({ value }) => value !== 'blue');
+  return SIGNAL_CHANNELS.filter(({ value }) => value === 'grayscale');
+}
+
+function drawRoiOverlay(
+  context: CanvasRenderingContext2D,
+  imageWidth: number,
+  rois: RoiRect[],
+  draftRoi: RoiRect | null,
+) {
+  const visibleRois = draftRoi ? [...rois, draftRoi] : rois;
+  context.save();
+  context.strokeStyle = '#69a7ff';
+  context.fillStyle = 'rgba(76, 139, 234, .12)';
+  context.lineWidth = Math.max(2, imageWidth / 700);
+  context.setLineDash([Math.max(5, imageWidth / 180), Math.max(4, imageWidth / 260)]);
+  visibleRois.forEach((roi, index) => {
+    context.fillRect(roi.x, roi.y, roi.width, roi.height);
+    context.strokeRect(roi.x, roi.y, roi.width, roi.height);
+    context.setLineDash([]);
+    context.font = `700 ${Math.max(12, imageWidth / 85)}px Arial`;
+    context.fillStyle = '#ddebff';
+    context.fillText(`R${index + 1}`, roi.x + 6, Math.max(18, roi.y + 20));
+    context.fillStyle = 'rgba(76, 139, 234, .12)';
+    context.setLineDash([Math.max(5, imageWidth / 180), Math.max(4, imageWidth / 260)]);
+  });
+  context.restore();
 }
 
 export default function Workbench({ userName }: { userName: string }) {
   const fileInput = useRef<HTMLInputElement>(null);
   const folderInput = useRef<HTMLInputElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const roisRef = useRef<RoiRect[]>([]);
+  const draftRoiRef = useRef<RoiRect | null>(null);
+  const draftFrameRef = useRef<number | null>(null);
   const openRequestId = useRef(0);
   const analysisRequestId = useRef(0);
-  const [sampleId, setSampleId] = useState('i901 · tile_x003_y013');
-  const [sourceName, setSourceName] = useState('tile_x003_y013.jp2');
+  const [sampleId, setSampleId] = useState('synthetic-demo-tile');
+  const [sourceName, setSourceName] = useState(SYNTHETIC_DEMO_NAME);
   const [sourceSize, setSourceSize] = useState(0);
+  const [sourceLastModified, setSourceLastModified] = useState(0);
   const [image, setImage] = useState<DecodedImage | null>(null);
   const [result, setResult] = useState<AnalysisResult | null>(null);
+  const [analysisRecord, setAnalysisRecord] = useState<AnalysisRecord | null>(null);
   const [stain, setStain] = useState('Sirius Red');
   const [signalChannel, setSignalChannel] = useState<SignalChannel>('red');
   const [structure, setStructure] = useState('Whole tissue');
@@ -101,7 +195,6 @@ export default function Workbench({ userName }: { userName: string }) {
   const [outsideMode, setOutsideMode] = useState<OutsideMode>('exclude');
   const [backgroundTolerance, setBackgroundTolerance] = useState(18);
   const [rois, setRois] = useState<RoiRect[]>([]);
-  const [draftRoi, setDraftRoi] = useState<RoiRect | null>(null);
   const [drawing, setDrawing] = useState(false);
   const [view, setView] = useState<ViewMode>('overlay');
   const [loading, setLoading] = useState(true);
@@ -109,7 +202,7 @@ export default function Workbench({ userName }: { userName: string }) {
   const [folderFiles, setFolderFiles] = useState<File[]>([]);
   const [folderIndex, setFolderIndex] = useState(0);
   const [displayChannel, setDisplayChannel] = useState<DisplayChannel>('composite');
-  const [message, setMessage] = useState('Loading the bundled Sirius Red reference tile…');
+  const [message, setMessage] = useState('Loading the bundled procedurally generated synthetic demo tile…');
   const [error, setError] = useState('');
 
   const initials = useMemo(
@@ -124,80 +217,120 @@ export default function Workbench({ userName }: { userName: string }) {
     [userName],
   );
 
-  const invalidateAnalysis = () => {
+  const invalidateAnalysis = useCallback(() => {
     analysisRequestId.current++;
     setResult(null);
+    setAnalysisRecord(null);
+    setError('');
+    setMessage('Settings changed — rerun analysis');
     if (image) setLoading(false);
-  };
+  }, [image]);
 
   const runAnalysis = useCallback(
     (decoded = image) => {
       if (!decoded) return;
       if (structure !== 'Whole tissue' && rois.length === 0) {
         setResult(null);
-        setMessage(`Draw one or more ${structure.toLowerCase()} regions on the image, then analyze.`);
+        setAnalysisRecord(null);
+        setError('No analyzable ROI is defined. Add at least one region, then rerun analysis.');
         return;
       }
+      const settings: AnalysisSettingsSnapshot = {
+        stain,
+        signalChannel,
+        minThreshold,
+        maxThreshold,
+        removeBackground,
+        backgroundTolerance,
+        outsideMode,
+        structure,
+        rois: rois.map((roi) => ({ ...roi })),
+      };
+      const provenance = {
+        analyst: userName,
+        sampleId: sampleId.trim(),
+        sourceName,
+        sourceSize,
+        sourceLastModified,
+      };
       const requestId = ++analysisRequestId.current;
       setLoading(true);
       setError('');
-      window.setTimeout(() => {
-        if (requestId !== analysisRequestId.current) return;
-        try {
-          const nextResult = analyzeImage(decoded, {
-            stain,
-            signalChannel,
-            minThreshold,
-            maxThreshold,
-            removeBackground,
-            backgroundTolerance,
-            outsideMode,
-            structure,
-            rois,
-          });
+      setResult(null);
+      setAnalysisRecord(null);
+      setMessage('Analyzing image…');
+      // Two animation frames guarantee that the working state is painted before
+      // the bounded synchronous analysis begins. Request IDs still discard stale work.
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
           if (requestId !== analysisRequestId.current) return;
-          setResult(nextResult);
-          setMessage(
-            outsideMode === 'report'
-              ? 'Analysis complete. Tissue and outside-tissue values are shown separately.'
-              : 'Analysis complete. Review the overlay before exporting.',
-          );
-        } catch (analysisError) {
-          if (requestId === analysisRequestId.current) setError(analysisError instanceof Error ? analysisError.message : 'The image could not be analyzed.');
-        } finally {
-          if (requestId === analysisRequestId.current) setLoading(false);
-        }
-      }, 20);
+          try {
+            const nextResult = analyzeImage(decoded, settings);
+            if (requestId !== analysisRequestId.current) return;
+            const nextRecord = buildAnalysisRecord({
+              ...provenance,
+              analyzedAt: new Date().toISOString(),
+              image: decoded,
+              result: nextResult,
+              settings,
+            });
+            setResult(nextResult);
+            setAnalysisRecord(nextRecord);
+            setMessage(
+              settings.removeBackground && settings.outsideMode === 'report'
+                ? 'Analysis complete. Tissue and outside-tissue values are shown separately.'
+                : 'Analysis complete. Review the overlay before exporting.',
+            );
+          } catch (analysisError) {
+            if (requestId === analysisRequestId.current) {
+              setResult(null);
+              setAnalysisRecord(null);
+              setError(errorMessage(analysisError, 'The image could not be analyzed.'));
+            }
+          } finally {
+            if (requestId === analysisRequestId.current) setLoading(false);
+          }
+        });
+      });
     },
-    [image, stain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance, outsideMode, structure, rois],
+    [
+      image, stain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
+      outsideMode, structure, rois, userName, sampleId, sourceName, sourceSize, sourceLastModified,
+    ],
   );
 
-  const openFile = useCallback(async (file: File, preserveSampleId = false, displayName = file.name) => {
+  const openFile = useCallback(async (file: File, demonstration = false, displayName = file.name) => {
     const requestId = ++openRequestId.current;
     analysisRequestId.current++;
     setLoading(true);
     setError('');
     setResult(null);
+    setAnalysisRecord(null);
     setImage(null);
     setDisplayChannel('composite');
-    setSourceName(preserveSampleId ? 'tile_x003_y013.jp2' : displayName);
-    setSourceSize(preserveSampleId ? 16_000_000 : file.size);
+    setSourceName(displayName);
+    setSourceSize(file.size);
+    setSourceLastModified(file.lastModified);
     setMessage(`Opening ${file.name}…`);
     try {
       const decoded = await decodeMicroscopyFile(file);
       if (requestId !== openRequestId.current) return;
       setImage(decoded);
-      if (!preserveSampleId) setSampleId(stripExtension(displayName).replaceAll('/', ' · '));
+      setSignalChannel((current) => {
+        if (decoded.channelCount <= 1) return 'grayscale';
+        return decoded.channelCount === 2 && current === 'blue' ? 'red' : current;
+      });
+      if (!demonstration) setSampleId(stripExtension(displayName).replaceAll('/', ' · '));
       setRois([]);
-      if (preserveSampleId) {
-        setMessage('Bundled reference ready. Press Analyze image when you want to run the pixel analysis.');
+      if (demonstration) {
+        setMessage(`Bundled ${SYNTHETIC_DEMO_NAME} ready — procedurally generated synthetic data; no specimen or acquisition. Demonstration only; not validated for quantitative use.`);
       } else {
         setMessage('Image ready. Adjust the settings, then analyze.');
       }
     } catch (openError) {
       if (requestId === openRequestId.current) {
-        setError(openError instanceof Error ? openError.message : 'The file could not be opened.');
-        setMessage('Choose another file or use the self-hosted ND2 companion.');
+        setError(`Could not decode ${displayName}: ${errorMessage(openError, 'The file could not be opened.')}`);
+        setMessage('Choose another supported file or verify that the private image companion is healthy.');
       }
     } finally {
       if (requestId === openRequestId.current) setLoading(false);
@@ -206,16 +339,19 @@ export default function Workbench({ userName }: { userName: string }) {
 
   useEffect(() => {
     let active = true;
-    fetch('/reference-tile.jpg')
-      .then((response) => response.blob())
+    fetch(`/${SYNTHETIC_DEMO_NAME}`)
+      .then((response) => {
+        if (!response.ok) throw new Error(`Reference request failed with HTTP ${response.status}.`);
+        return response.blob();
+      })
       .then((blob) => {
         if (!active) return;
-        return openFile(new File([blob], 'reference-tile.jpg', { type: 'image/jpeg' }), true);
+        return openFile(new File([blob], SYNTHETIC_DEMO_NAME, { type: 'image/jpeg', lastModified: 0 }), true);
       })
-      .catch(() => {
+      .catch((referenceError) => {
         if (active) {
           setLoading(false);
-          setError('The bundled reference image could not be loaded. You can still choose your own file.');
+          setError(`The bundled reference image could not be loaded: ${errorMessage(referenceError, 'Unknown decode error')}`);
         }
       });
     return () => {
@@ -223,58 +359,76 @@ export default function Workbench({ userName }: { userName: string }) {
     };
   }, [openFile]);
 
+  const paintCanvas = useCallback((draftRoi = draftRoiRef.current) => {
+    const canvas = canvasRef.current;
+    const baseCanvas = baseCanvasRef.current;
+    if (!canvas || !baseCanvas || canvas.width !== baseCanvas.width || canvas.height !== baseCanvas.height) return;
+    const context = canvas.getContext('2d');
+    if (!context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(baseCanvas, 0, 0);
+    drawRoiOverlay(context, canvas.width, roisRef.current, draftRoi);
+  }, []);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !image) return;
+    const baseCanvas = document.createElement('canvas');
     canvas.width = image.width;
     canvas.height = image.height;
-    const context = canvas.getContext('2d');
+    baseCanvas.width = image.width;
+    baseCanvas.height = image.height;
+    const context = baseCanvas.getContext('2d');
     if (!context) return;
 
-    const source = result && displayChannel === 'composite' ? result.displayRgba : image.rgba;
-    const pixels = new Uint8ClampedArray(source);
-    applyChannelViewInPlace(pixels, displayChannel);
-    if (result && view !== 'original') {
-      for (let i = 0; i < result.positiveMask.length; i++) {
-        const p = i * 4;
-        if (view === 'mask') {
-          const selected = result.regionMask[i] === 1;
-          const positive = result.positiveMask[i] === 1;
-          pixels[p] = positive ? 207 : selected ? 235 : 28;
-          pixels[p + 1] = positive ? 54 : selected ? 241 : 36;
-          pixels[p + 2] = positive ? 112 : selected ? 237 : 32;
-          pixels[p + 3] = 255;
-        } else if (result.positiveMask[i]) {
-          pixels[p] = Math.round(pixels[p] * 0.35 + 214 * 0.65);
-          pixels[p + 1] = Math.round(pixels[p + 1] * 0.35 + 52 * 0.65);
-          pixels[p + 2] = Math.round(pixels[p + 2] * 0.35 + 112 * 0.65);
-        } else if (!result.tissueMask[i]) {
-          pixels[p] = Math.round(pixels[p] * 0.28);
-          pixels[p + 1] = Math.round(pixels[p + 1] * 0.28);
-          pixels[p + 2] = Math.round(pixels[p + 2] * 0.28);
+    // Build the expensive RGBA frame only when the image/view changes. ROI motion
+    // redraws this cached canvas instead of cloning and rewriting every source pixel.
+    const source = view === 'original' || !result ? image.rgba : result.displayRgba;
+    const needsWorkingCopy = displayChannel !== 'composite' || Boolean(result && view !== 'original');
+    let frame: ImageData;
+    if (!needsWorkingCopy) {
+      frame = new ImageData(source as Uint8ClampedArray<ArrayBuffer>, image.width, image.height);
+    } else {
+      // Never mutate arrays owned by image/result state. Transform an independent
+      // buffer only when a channel or analysis overlay actually requires writes.
+      const pixels = new Uint8ClampedArray(source);
+      if (displayChannel !== 'composite') applyChannelViewInPlace(pixels, displayChannel);
+      if (result && view !== 'original') {
+        for (let i = 0; i < result.positiveMask.length; i++) {
+          const p = i * 4;
+          if (view === 'mask') {
+            const selected = result.regionMask[i] === 1;
+            const positive = result.positiveMask[i] === 1;
+            pixels[p] = positive ? 207 : selected ? 235 : 28;
+            pixels[p + 1] = positive ? 54 : selected ? 241 : 36;
+            pixels[p + 2] = positive ? 112 : selected ? 237 : 32;
+            pixels[p + 3] = 255;
+          } else if (result.positiveMask[i]) {
+            pixels[p] = Math.round(pixels[p] * 0.35 + 214 * 0.65);
+            pixels[p + 1] = Math.round(pixels[p + 1] * 0.35 + 52 * 0.65);
+            pixels[p + 2] = Math.round(pixels[p + 2] * 0.35 + 112 * 0.65);
+          } else if (!result.tissueMask[i]) {
+            pixels[p] = Math.round(pixels[p] * 0.28);
+            pixels[p + 1] = Math.round(pixels[p + 1] * 0.28);
+            pixels[p + 2] = Math.round(pixels[p + 2] * 0.28);
+          }
         }
       }
+      frame = new ImageData(pixels, image.width, image.height);
     }
-    context.putImageData(new ImageData(pixels, image.width, image.height), 0, 0);
+    context.putImageData(frame, 0, 0);
+    baseCanvasRef.current = baseCanvas;
+    paintCanvas();
+  }, [image, displayChannel, result, view, paintCanvas]);
 
-    const allRois = draftRoi ? [...rois, draftRoi] : rois;
-    context.save();
-    context.strokeStyle = '#69a7ff';
-    context.fillStyle = 'rgba(76, 139, 234, .12)';
-    context.lineWidth = Math.max(2, image.width / 700);
-    context.setLineDash([Math.max(5, image.width / 180), Math.max(4, image.width / 260)]);
-    allRois.forEach((roi, index) => {
-      context.fillRect(roi.x, roi.y, roi.width, roi.height);
-      context.strokeRect(roi.x, roi.y, roi.width, roi.height);
-      context.setLineDash([]);
-      context.font = `700 ${Math.max(12, image.width / 85)}px Arial`;
-      context.fillStyle = '#ddebff';
-      context.fillText(`R${index + 1}`, roi.x + 6, Math.max(18, roi.y + 20));
-      context.fillStyle = 'rgba(76, 139, 234, .12)';
-      context.setLineDash([Math.max(5, image.width / 180), Math.max(4, image.width / 260)]);
-    });
-    context.restore();
-  }, [image, displayChannel, result, view, rois, draftRoi]);
+  useEffect(() => {
+    roisRef.current = rois;
+    paintCanvas();
+  }, [rois, paintCanvas]);
+
+  useEffect(() => () => {
+    if (draftFrameRef.current !== null) window.cancelAnimationFrame(draftFrameRef.current);
+  }, []);
 
   const handleFiles = useCallback(
     (files: FileList | File[]) => {
@@ -319,35 +473,102 @@ export default function Workbench({ userName }: { userName: string }) {
     if (!image) return { x: 0, y: 0 };
     const bounds = event.currentTarget.getBoundingClientRect();
     return {
-      x: ((event.clientX - bounds.left) / bounds.width) * image.width,
-      y: ((event.clientY - bounds.top) / bounds.height) * image.height,
+      x: Math.max(0, Math.min(image.width, ((event.clientX - bounds.left) / bounds.width) * image.width)),
+      y: Math.max(0, Math.min(image.height, ((event.clientY - bounds.top) / bounds.height) * image.height)),
     };
   };
 
   const onPointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
     if (!drawing || !image) return;
+    event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
     const point = pointInImage(event);
-    setDraftRoi({ x: point.x, y: point.y, width: 0, height: 0 });
+    draftRoiRef.current = { x: point.x, y: point.y, width: 0, height: 0 };
+    paintCanvas();
   };
 
   const onPointerMove = (event: PointerEvent<HTMLCanvasElement>) => {
+    const draftRoi = draftRoiRef.current;
     if (!drawing || !draftRoi) return;
     const point = pointInImage(event);
-    setDraftRoi({ ...draftRoi, width: point.x - draftRoi.x, height: point.y - draftRoi.y });
+    draftRoiRef.current = { ...draftRoi, width: point.x - draftRoi.x, height: point.y - draftRoi.y };
+    if (draftFrameRef.current === null) {
+      draftFrameRef.current = window.requestAnimationFrame(() => {
+        draftFrameRef.current = null;
+        paintCanvas();
+      });
+    }
   };
 
   const onPointerUp = (event: PointerEvent<HTMLCanvasElement>) => {
+    const draftRoi = draftRoiRef.current;
     if (!drawing || !draftRoi) return;
-    event.currentTarget.releasePointerCapture(event.pointerId);
+    const point = pointInImage(event);
+    const finishedRoi = { ...draftRoi, width: point.x - draftRoi.x, height: point.y - draftRoi.y };
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     const normalized: RoiRect = {
-      x: draftRoi.width < 0 ? draftRoi.x + draftRoi.width : draftRoi.x,
-      y: draftRoi.height < 0 ? draftRoi.y + draftRoi.height : draftRoi.y,
-      width: Math.abs(draftRoi.width),
-      height: Math.abs(draftRoi.height),
+      x: Math.round(finishedRoi.width < 0 ? finishedRoi.x + finishedRoi.width : finishedRoi.x),
+      y: Math.round(finishedRoi.height < 0 ? finishedRoi.y + finishedRoi.height : finishedRoi.y),
+      width: Math.round(Math.abs(finishedRoi.width)),
+      height: Math.round(Math.abs(finishedRoi.height)),
     };
-    if (normalized.width > 5 && normalized.height > 5) setRois((current) => [...current, normalized]);
-    setDraftRoi(null);
+    draftRoiRef.current = null;
+    if (draftFrameRef.current !== null) {
+      window.cancelAnimationFrame(draftFrameRef.current);
+      draftFrameRef.current = null;
+    }
+    if (normalized.width > 5 && normalized.height > 5) {
+      const nextRois = [...roisRef.current, normalized];
+      roisRef.current = nextRois;
+      setRois(nextRois);
+      invalidateAnalysis();
+    }
+    paintCanvas(null);
+  };
+
+  const onPointerCancel = () => {
+    draftRoiRef.current = null;
+    if (draftFrameRef.current !== null) {
+      window.cancelAnimationFrame(draftFrameRef.current);
+      draftFrameRef.current = null;
+    }
+    paintCanvas(null);
+  };
+
+  const addCentralRoi = () => {
+    if (!image) return;
+    const width = Math.max(1, Math.round(image.width * 0.25));
+    const height = Math.max(1, Math.round(image.height * 0.25));
+    setRois((current) => [
+      ...current,
+      { x: Math.round((image.width - width) / 2), y: Math.round((image.height - height) / 2), width, height },
+    ]);
+    invalidateAnalysis();
+  };
+
+  const updateRoi = (index: number, field: keyof RoiRect, value: number) => {
+    if (!image || !Number.isFinite(value)) return;
+    setRois((current) => current.map((roi, roiIndex) => {
+      if (roiIndex !== index) return roi;
+      const next = { ...roi };
+      if (field === 'x') {
+        next.x = Math.max(0, Math.min(image.width, value));
+        next.width = Math.min(next.width, image.width - next.x);
+      } else if (field === 'y') {
+        next.y = Math.max(0, Math.min(image.height, value));
+        next.height = Math.min(next.height, image.height - next.y);
+      } else if (field === 'width') {
+        next.width = Math.max(0, Math.min(image.width - next.x, value));
+      } else {
+        next.height = Math.max(0, Math.min(image.height - next.y, value));
+      }
+      return next;
+    }));
+    invalidateAnalysis();
+  };
+
+  const deleteRoi = (index: number) => {
+    setRois((current) => current.filter((_, roiIndex) => roiIndex !== index));
     invalidateAnalysis();
   };
 
@@ -361,52 +582,54 @@ export default function Workbench({ userName }: { userName: string }) {
   };
 
   const chooseStructure = (value: string) => {
+    onPointerCancel();
     setStructure(value);
     setRois([]);
     setDrawing(value !== 'Whole tissue');
     invalidateAnalysis();
-    setMessage(
-      value === 'Whole tissue'
-        ? 'Whole-tissue mode uses the automatically separated tissue area.'
-        : `Draw boxes around every ${value.toLowerCase()} region you want included.`,
-    );
   };
 
   const chooseDisplayChannel = (channel: DisplayChannel) => {
     setDisplayChannel(channel);
-    invalidateAnalysis();
-    if (channel !== 'composite') setSignalChannel(channel);
-    setMessage(channel === 'composite' ? 'Composite view selected.' : `${channel[0].toUpperCase()}${channel.slice(1)} channel selected.`);
+  };
+
+  const toggleDrawing = () => {
+    if (drawing) onPointerCancel();
+    setDrawing(!drawing);
   };
 
   const exportCsv = () => {
-    if (!result || !image) return;
-    const values = [
-      sampleId, stain, stain.includes('(IF)') ? signalChannel : 'stain score', structure, result.positivePercent.toFixed(4), result.analyzedPixels,
-      result.positivePixels, result.mean.toFixed(4), result.mode, result.min, result.max,
-      result.perimeter, result.intDen.toFixed(4), result.rawIntDen.toFixed(4), minThreshold,
-      maxThreshold, result.backgroundPixels, result.backgroundPositivePercent.toFixed(4), sourceName,
-    ];
-    const headers = [
-      'Sample_ID', 'Stain', 'Signal_Channel', 'Structure', 'Percent_Area', 'Area', 'Positive_Area', 'Mean', 'Mode',
-      'Min', 'Max', 'Perim', 'IntDen', 'RawIntDen', 'MinThreshold', 'MaxThreshold',
-      'Background_Area', 'Background_Positive_Percent', 'Source_File',
-    ];
-    const escape = (value: string | number) => `"${String(value).replaceAll('"', '""')}"`;
-    const csv = `${headers.map(escape).join(',')}\n${values.map(escape).join(',')}\n`;
-    const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `${sampleId.replace(/[^a-z0-9_-]+/gi, '_') || 'sample'}_quantification.csv`;
-    link.click();
-    URL.revokeObjectURL(url);
+    if (!analysisRecord) return;
+    downloadText(
+      analysisRecordToCsv(analysisRecord),
+      'text/csv;charset=utf-8',
+      `${safeExportName(analysisRecord.sampleId)}_quantification.csv`,
+    );
   };
+
+  const exportJson = () => {
+    if (!analysisRecord) return;
+    downloadText(
+      `${JSON.stringify(analysisRecord, null, 2)}\n`,
+      'application/json;charset=utf-8',
+      `${safeExportName(analysisRecord.sampleId)}_quantification.json`,
+    );
+  };
+
+  const metrics = analysisRecord?.metrics;
+  const displayChannels = availableDisplayChannels(image);
+  const signalChannels = availableSignalChannels(image);
+  const channelMappingDisclosure = image?.channelCount === 2
+    ? 'Two source channels mapped: channel 1 → display R and channel 2 → display G. No Blue source channel is present.'
+    : image?.channelCount === 1
+      ? 'One source channel is rendered as a grayscale composite.'
+      : '';
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <div className="brand"><span className="brand-mark" aria-hidden="true"><span /></span><div><p>KidneyQuant</p><span>stain analysis workbench</span></div></div>
-        <div className="privacy-state"><i /> On-device analysis</div>
+        <div className="privacy-state"><i /> {image ? `Source processing: ${image.processingLocation === 'browser' ? 'this browser' : 'private companion'}` : 'Source processing location pending'}</div>
         <div className="profile" title={userName}>{initials}</div>
       </header>
 
@@ -419,42 +642,67 @@ export default function Workbench({ userName }: { userName: string }) {
         <aside className="control-panel">
           <div className="panel-title"><span>01</span><div><h2>Set up analysis</h2><p>Sample and staining details</p></div></div>
           <label className="field-label" htmlFor="sample-id">Sample ID <b>required</b></label>
-          <input id="sample-id" className="text-input" value={sampleId} onChange={(event) => setSampleId(event.target.value)} />
+          <input id="sample-id" className="text-input" value={sampleId} onChange={(event) => { setSampleId(event.target.value); invalidateAnalysis(); }} />
 
           <label className="field-label" htmlFor="stain">Staining</label>
           <select id="stain" className="select-input" value={stain} onChange={(event) => chooseStain(event.target.value)}>{STAIN_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
 
-          {stain.includes('(IF)') && <><label className="field-label" htmlFor="signal-channel">Positive signal channel</label><select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { setSignalChannel(event.target.value as SignalChannel); invalidateAnalysis(); }}><option value="red">Red</option><option value="green">Green</option><option value="blue">Blue</option><option value="grayscale">Grayscale</option></select></>}
+          {stain.includes('(IF)') && <><label className="field-label" htmlFor="signal-channel">Positive signal channel</label><select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { setSignalChannel(event.target.value as SignalChannel); invalidateAnalysis(); }}>{signalChannels.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></>}
 
-          <label className="field-label" htmlFor="structure">Structure to quantify</label>
-          <select id="structure" className="select-input" value={structure} onChange={(event) => chooseStructure(event.target.value)}>{STRUCTURE_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
+          <label className="field-label" htmlFor="roi-category">ROI category</label>
+          <select id="roi-category" className="select-input" value={structure} onChange={(event) => chooseStructure(event.target.value)}>{STRUCTURE_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
+          <p className="validation-note">ROI categories label analyst-defined regions; they do not segment or identify anatomy.</p>
 
-          {structure !== 'Whole tissue' && <div className="roi-controls"><button type="button" className={drawing ? 'active' : ''} onClick={() => setDrawing((current) => !current)}>{drawing ? 'Drawing regions' : 'Draw regions'}</button><button type="button" onClick={() => { setRois([]); invalidateAnalysis(); }}>Clear ({rois.length})</button></div>}
+          {structure !== 'Whole tissue' && <>
+            <div className="roi-controls">
+              <button type="button" disabled={!image} onClick={addCentralRoi}>Add region</button>
+              <button type="button" className={drawing ? 'active' : ''} disabled={!image} aria-pressed={drawing} onClick={toggleDrawing}>{drawing ? 'Drawing regions' : 'Draw regions'}</button>
+              <button type="button" disabled={!rois.length} onClick={() => { setRois([]); invalidateAnalysis(); }}>Clear ({rois.length})</button>
+            </div>
+            {rois.length > 0 && <div className="roi-editor" aria-label="ROI coordinate editor">
+              {rois.map((roi, index) => <div className="roi-row" key={index}>
+                <strong>R{index + 1}</strong>
+                {(['x', 'y', 'width', 'height'] as const).map((field) => <label className="roi-coordinate" key={field}>
+                  <span>{field}</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="1"
+                    aria-label={`Region ${index + 1} ${field}`}
+                    value={Math.round(roi[field])}
+                    onChange={(event) => updateRoi(index, field, Number(event.target.value))}
+                  />
+                </label>)}
+                <button className="roi-delete" type="button" aria-label={`Delete region ${index + 1}`} onClick={() => deleteRoi(index)}>Delete</button>
+              </div>)}
+            </div>}
+          </>}
 
-          <div className="switch-row"><div><strong>Remove slide background</strong><span>Border-connected area outside tissue</span></div><button type="button" className={`toggle ${removeBackground ? 'active' : ''}`} aria-pressed={removeBackground} onClick={() => { setRemoveBackground((current) => !current); invalidateAnalysis(); }}><i /></button></div>
+          <div className="switch-row"><div><strong>Remove slide background</strong><span>Border-connected source-RGB distance mask</span></div><button type="button" className={`toggle ${removeBackground ? 'active' : ''}`} aria-label="Remove slide background" aria-pressed={removeBackground} onClick={() => { setRemoveBackground((current) => !current); invalidateAnalysis(); }}><i /></button></div>
 
           {removeBackground && <><label className="field-label compact" htmlFor="outside-mode">Outside-tissue handling</label><select id="outside-mode" className="select-input" value={outsideMode} onChange={(event) => { setOutsideMode(event.target.value as OutsideMode); invalidateAnalysis(); }}><option value="exclude">Exclude from calculations</option><option value="report">Exclude and report separately</option></select><label className="field-label compact" htmlFor="background-tolerance">Background tolerance <span>{backgroundTolerance}</span></label><input id="background-tolerance" className="single-range" type="range" min="4" max="60" value={backgroundTolerance} onChange={(event) => { setBackgroundTolerance(Number(event.target.value)); invalidateAnalysis(); }} /></>}
 
           <div className="threshold-card"><div className="threshold-title"><strong>Positive stain threshold</strong><span>Manual</span></div><label htmlFor="minimum-threshold">Minimum <b>{minThreshold}</b></label><input id="minimum-threshold" className="single-range berry" type="range" min="0" max="255" value={minThreshold} onChange={(event) => { setMinThreshold(Math.min(Number(event.target.value), maxThreshold)); invalidateAnalysis(); }} /><label htmlFor="maximum-threshold">Maximum <b>{maxThreshold}</b></label><input id="maximum-threshold" className="single-range berry" type="range" min="0" max="255" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.max(Number(event.target.value), minThreshold)); invalidateAnalysis(); }} /></div>
+          <p className="validation-note">{stainScoreDescription(stain, signalChannel)}</p>
 
           <button type="button" className="primary-button" disabled={!image || loading || !sampleId.trim()} onClick={() => runAnalysis()}>{loading ? 'Working…' : 'Analyze image'} <span>→</span></button>
-          <p className="validation-note">Research-use workflow. Thresholds and structure regions must be reviewed before statistical analysis.</p>
+          <p className="validation-note">Research-use workflow. Thresholds and ROI regions must be reviewed before statistical analysis.</p>
         </aside>
 
-        <section className="image-stage">
+        <section className="image-stage" aria-busy={loading}>
           <div className="stage-toolbar">
             <div className="file-chip" title={sourceName}><i /> {sourceName} <span>{formatBytes(sourceSize)}</span></div>
             {folderFiles.length > 1 && <div className="folder-nav" aria-label="Folder image navigation"><button type="button" aria-label="Previous file" disabled={loading || folderIndex === 0} onClick={() => openFolderFile(folderIndex - 1)}>‹</button><span>{folderIndex + 1} / {folderFiles.length}</span><button type="button" aria-label="Next file" disabled={loading || folderIndex === folderFiles.length - 1} onClick={() => openFolderFile(folderIndex + 1)}>›</button></div>}
-            <div className="view-tabs" aria-label="Image view">{(['overlay', 'original', 'mask'] as ViewMode[]).map((option) => <button key={option} type="button" className={view === option ? 'active' : ''} onClick={() => setView(option)}>{option}</button>)}</div>
+            <div className="view-tabs" aria-label="Image view">{(['overlay', 'original', 'mask'] as ViewMode[]).map((option) => <button key={option} type="button" aria-pressed={view === option} className={view === option ? 'active' : ''} onClick={() => setView(option)}>{option}</button>)}</div>
             <div className="open-actions"><button className="replace-button" type="button" disabled={loading} onClick={() => fileInput.current?.click()}>Open file</button><button className="replace-button" type="button" disabled={loading} onClick={() => folderInput.current?.click()}>Open folder</button></div>
             <input ref={fileInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" hidden onChange={onFileChange} />
             <input ref={folderInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" multiple hidden onChange={onFolderChange} {...{ webkitdirectory: '', directory: '' }} />
           </div>
 
-          {image && <div className="channel-bar" aria-label="Image channels"><b>C</b>{(['composite', 'red', 'green', 'blue'] as DisplayChannel[]).map((channel) => <button key={channel} type="button" disabled={loading} aria-label={`${channel} channel view`} aria-pressed={displayChannel === channel} className={displayChannel === channel ? 'active' : ''} onClick={() => chooseDisplayChannel(channel)}>{channel === 'composite' ? 'Composite' : channel[0].toUpperCase()}</button>)}</div>}
+          {image && <div className="channel-bar" aria-label="Image display channels"><b aria-hidden="true">C</b>{displayChannels.map((channel) => <button key={channel} type="button" disabled={loading} aria-label={`${channel} channel view`} aria-pressed={displayChannel === channel} className={displayChannel === channel ? 'active' : ''} onClick={() => chooseDisplayChannel(channel)}>{channel === 'composite' ? 'Composite' : channel[0].toUpperCase()}</button>)}{channelMappingDisclosure && <span className="channel-mapping">{channelMappingDisclosure}</span>}</div>}
 
           <div className={`image-canvas ${draggingFile ? 'dragging' : ''} ${drawing ? 'drawing' : ''}`} onDragEnter={(event) => { event.preventDefault(); setDraggingFile(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDraggingFile(false)} onDrop={onDrop}>
-            {image && <canvas ref={canvasRef} aria-label="Microscopy image analysis preview" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />}
+            {image && <canvas ref={canvasRef} aria-label="Microscopy image analysis preview" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} />}
             {!image && <div className="empty-canvas"><strong>No image open</strong><span>Choose a TIFF, JP2, ND2 file, or folder.</span></div>}
             {(draggingFile || !image) && <button type="button" className="central-dropzone" disabled={loading} onClick={() => fileInput.current?.click()}><strong>Drop ND2, TIFF, or JP2</strong><span>or choose a file</span></button>}
             {image && <button type="button" className="dropzone" onClick={() => fileInput.current?.click()}><strong>Drop ND2, TIFF, or JP2</strong><span>or choose a file</span></button>}
@@ -462,19 +710,45 @@ export default function Workbench({ userName }: { userName: string }) {
             <div className="legend"><span><i className="positive" /> Positive stain</span><span><i className="structure" /> Selected region</span><span><i className="excluded" /> Excluded</span></div>
           </div>
 
-          <div className={`analysis-message ${error ? 'error' : ''}`} role="status"><i>{error ? '!' : loading ? '…' : '✓'}</i><span>{error || message}</span></div>
-          <div className="stage-caption"><span>{image ? `${image.width.toLocaleString()} × ${image.height.toLocaleString()} px` : '—'}</span><span>{image ? `${image.sourceFormat} · ${image.bitDepth}-bit source` : '—'}</span><span>{removeBackground ? 'Background separation on' : 'Background included'}</span></div>
+          <div className={`analysis-message ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'} aria-live={error ? 'assertive' : 'polite'}><i>{error ? '!' : loading ? '…' : analysisRecord ? '✓' : 'i'}</i><span>{error || message}</span></div>
+          <div className="stage-caption">
+            <span>{image ? `${image.width.toLocaleString()} × ${image.height.toLocaleString()} px` : '—'}</span>
+            <span>{image ? `Source: ${image.sourceFormat}` : '—'}</span>
+            <span>{image ? `Source bit depth: ${image.bitDepth}-bit` : '—'}</span>
+            <span>{image ? `Original shape: ${image.originalShape}` : '—'}</span>
+            <span>{image ? `Original axes: ${image.originalAxes.join(', ')}` : '—'}</span>
+            <span>{image ? `Selected shape: ${image.selectedShape}` : '—'}</span>
+            <span>{image ? `Selected axes: ${image.selectedAxes.join(', ')}` : '—'}</span>
+            <span>{image ? `Plane selection: ${formatPlaneSelection(image.planeSelection)}` : '—'}</span>
+            <span>{image ? `Processing: ${image.processing} (${image.processingLocation})` : '—'}</span>
+            <span>{removeBackground ? 'Background separation on' : 'Background included'}</span>
+          </div>
+          {image && <p className="validation-note" style={{ padding: '0 15px 12px', margin: 0 }}>
+            {image.quantitativeStatus === 'demonstration'
+              ? `Bundled ${SYNTHETIC_DEMO_NAME} is procedurally generated synthetic data with no specimen or acquisition. Demonstration only; measurements are experimental and not validated.`
+              : 'Experimental quantification only — source processing, stain scoring, and thresholds are not validated.'}
+          </p>}
         </section>
 
         <aside className="results-panel">
-          <div className="panel-title"><span>02</span><div><h2>Review result</h2><p>{result ? 'Current measurement' : 'Awaiting analysis'}</p></div></div>
-          <div className="primary-metric"><span>Positive area</span><strong>{result ? formatDecimal(result.positivePercent) : '—'}{result && <small>%</small>}</strong><p>of {structure.toLowerCase()} analysis area</p></div>
-          <div className="sample-summary"><span>Sample ID</span><strong>{sampleId || 'Required'}</strong></div>
-          <dl className="metric-list"><div><dt>Area</dt><dd>{result ? `${formatInteger(result.analyzedPixels)} px²` : '—'}</dd></div><div><dt>Positive area</dt><dd>{result ? `${formatInteger(result.positivePixels)} px²` : '—'}</dd></div><div><dt>Mean</dt><dd>{result ? formatDecimal(result.mean) : '—'}</dd></div><div><dt>Mode</dt><dd>{result ? result.mode : '—'}</dd></div><div><dt>Min / Max</dt><dd>{result ? `${result.min} / ${result.max}` : '—'}</dd></div><div><dt>Perim</dt><dd>{result ? `${formatInteger(result.perimeter)} px` : '—'}</dd></div><div><dt>IntDen</dt><dd>{result ? formatInteger(result.intDen) : '—'}</dd></div><div><dt>RawIntDen</dt><dd>{result ? formatInteger(result.rawIntDen) : '—'}</dd></div><div><dt>Threshold</dt><dd>{minThreshold} — {maxThreshold}</dd></div></dl>
-          {result && outsideMode === 'report' && <div className="background-report"><span>Outside tissue</span><strong>{formatInteger(result.backgroundPixels)} px²</strong><small>{formatDecimal(result.backgroundPositivePercent)}% positive, reported separately</small></div>}
-          <div className={`quality-card ${!result ? 'neutral' : ''}`}><i>{result ? '✓' : 'i'}</i><div><strong>{result ? 'Mask ready for review' : 'No finalized result yet'}</strong><span>{result ? `${formatDecimal(result.excludedPercent, 1)}% slide/background excluded` : 'Open an image and run analysis'}</span></div></div>
-          <button type="button" className="export-button" disabled={!result || !sampleId.trim()} onClick={exportCsv}>Export CSV</button>
-          <p className="calibration-note">Area and perimeter use pixels. Add calibrated pixel size in a future validated workflow for µm² and µm.</p>
+          <div className="panel-title"><span>02</span><div><h2>Review result</h2><p>{analysisRecord ? 'Finalized measurement snapshot' : 'Awaiting analysis'}</p></div></div>
+          <div className="primary-metric"><span>Threshold-positive fraction</span><strong>{metrics ? formatDecimal(metrics.positivePercent) : '—'}{metrics && <small>%</small>}</strong><p>of all analyzed pixels in the selected ROI category</p></div>
+          <div className="sample-summary"><span>Sample ID</span><strong>{analysisRecord?.sampleId || sampleId || 'Required'}</strong></div>
+          <dl className="metric-list">
+            <div><dt>Analyzed area (ROI/tissue mask)</dt><dd>{metrics ? `${formatInteger(metrics.analyzedPixels)} px²` : '—'}</dd></div>
+            <div><dt>Positive area (threshold-positive)</dt><dd>{metrics ? `${formatInteger(metrics.positivePixels)} px²` : '—'}</dd></div>
+            <div><dt>Mean score (all analyzed pixels)</dt><dd>{metrics ? formatDecimal(metrics.meanScoreAllAnalyzedPixels) : '—'}</dd></div>
+            <div><dt>Mode score (all analyzed pixels)</dt><dd>{metrics ? metrics.modeScoreAllAnalyzedPixels : '—'}</dd></div>
+            <div><dt>Score range (all analyzed pixels)</dt><dd>{metrics ? `${metrics.minScoreAllAnalyzedPixels} / ${metrics.maxScoreAllAnalyzedPixels}` : '—'}</dd></div>
+            <div><dt>Grid perimeter (positive-mask edges)</dt><dd>{metrics ? `${formatInteger(metrics.gridPerimeterPixelEdges)} pixel edges` : '—'}</dd></div>
+            <div><dt>Score sum (all analyzed pixels)</dt><dd>{metrics ? formatInteger(metrics.scoreSumAllAnalyzedPixels) : '—'}</dd></div>
+            <div><dt>Inclusive score threshold</dt><dd>{analysisRecord ? `${analysisRecord.analysis.minThreshold} — ${analysisRecord.analysis.maxThreshold}` : '—'}</dd></div>
+          </dl>
+          {analysisRecord && analysisRecord.analysis.removeBackground && analysisRecord.analysis.outsideMode === 'report' && analysisRecord.metrics.backgroundPixels !== undefined && analysisRecord.metrics.backgroundPositivePercent !== undefined && <div className="background-report"><span>Outside tissue (reported separately)</span><strong>{formatInteger(analysisRecord.metrics.backgroundPixels)} px²</strong><small>{formatDecimal(analysisRecord.metrics.backgroundPositivePercent)}% threshold-positive</small></div>}
+          <div className={`quality-card ${!analysisRecord ? 'neutral' : ''}`}><i>{analysisRecord ? '✓' : 'i'}</i><div><strong>{analysisRecord ? 'Mask ready for review' : 'No finalized result yet'}</strong><span>{analysisRecord ? `${formatDecimal(analysisRecord.metrics.excludedPercent, 1)}% slide/background excluded` : 'Open an image and run analysis'}</span></div></div>
+          <button type="button" className="export-button" disabled={!analysisRecord} onClick={exportCsv}>Export CSV</button>
+          <button type="button" className="export-button" disabled={!analysisRecord} onClick={exportJson}>Export JSON</button>
+          <p className="calibration-note">Area uses pixels; grid perimeter uses positive-mask pixel edges. No spatial calibration is applied.</p>
         </aside>
       </section>
     </main>

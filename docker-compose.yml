@@ -1,32 +1,171 @@
 services:
   web:
-    build: .
+    image: ${KIDNEYQUANT_WEB_IMAGE:-kidneyquant-web:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
     restart: unless-stopped
     environment:
       SELF_HOSTED: "true"
       NEXT_PUBLIC_SITE_ORIGIN: ${NEXT_PUBLIC_SITE_ORIGIN:-http://localhost:3000}
       ANALYSIS_SERVICE_URL: http://analysis:8000
-    ports:
-      - "127.0.0.1:3000:3000"
+      MAX_UPLOAD_BYTES: "536870912"
+      KIDNEYQUANT_PROXY_ASSERTION_FILE: /run/secrets/kidneyquant-proxy-assertion
+    volumes:
+      - type: bind
+        source: ${KIDNEYQUANT_PROXY_ASSERTION_PATH:?Set KIDNEYQUANT_PROXY_ASSERTION_PATH to the protected host assertion file}
+        target: /run/secrets/kidneyquant-proxy-assertion
+        read_only: true
+        bind:
+          create_host_path: false
+    expose:
+      - "3000"
+    networks:
+      - auth-web
+      - web-analysis
     depends_on:
       analysis:
         condition: service_healthy
-
-  analysis:
-    build: ./analysis-service
-    restart: unless-stopped
-    expose:
-      - "8000"
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m,uid=10001,gid=10001,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+    cpus: 1.0
+    pids_limit: 128
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      test: ["CMD", "node", "-e", "const fs=require('node:fs'); const a=fs.readFileSync('/run/secrets/kidneyquant-proxy-assertion','utf8').trim(); fetch('http://127.0.0.1:3000/api/ready',{method:'HEAD',headers:{'x-kidneyquant-authenticated-user':'web-healthcheck','x-kidneyquant-proxy-assertion':a}}).then(r=>process.exit(r.status===204?0:1)).catch(()=>process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 5
+      start_period: 20s
+
+  analysis:
+    image: ${KIDNEYQUANT_ANALYSIS_IMAGE:-kidneyquant-analysis:local}
+    build:
+      context: .
+      dockerfile: analysis-service/Dockerfile
+    restart: unless-stopped
+    environment:
+      MAX_UPLOAD_BYTES: "536870912"
+      MAX_DECODED_PIXELS: "8000000"
+      MAX_RETAINED_CHANNELS: "3"
+      MAX_CONCURRENT_DECODES: "1"
+    expose:
+      - "8000"
+    networks:
+      - web-analysis
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=768m,uid=10001,gid=10001,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 4g
+    cpus: 2.0
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  auth:
+    image: ${KIDNEYQUANT_AUTH_IMAGE:-kidneyquant-auth:local}
+    build:
+      context: ./auth
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      KIDNEYQUANT_PROXY_ASSERTION_FILE: /run/secrets/kidneyquant-proxy-assertion
+      KIDNEYQUANT_TRUSTED_PROXY_CIDR: ${KIDNEYQUANT_TRUSTED_PROXY_CIDR:?Set KIDNEYQUANT_TRUSTED_PROXY_CIDR to the exact ingress proxy CIDR}
+    volumes:
+      - type: bind
+        source: ${KIDNEYQUANT_HTPASSWD_PATH:?Set KIDNEYQUANT_HTPASSWD_PATH to the protected host htpasswd file}
+        target: /etc/nginx/.htpasswd
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${KIDNEYQUANT_PROXY_ASSERTION_PATH:?Set KIDNEYQUANT_PROXY_ASSERTION_PATH to the protected host assertion file}
+        target: /run/secrets/kidneyquant-proxy-assertion
+        read_only: true
+        bind:
+          create_host_path: false
+    expose:
+      - "8080"
+    networks:
+      auth-web:
+      auth-edge:
+      nginx-proxy-manager_default:
+        aliases:
+          - kidneyquant-auth
+    depends_on:
+      web:
+        condition: service_healthy
+    user: "10001:10001"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m,uid=10001,gid=10001,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   tunnel:
-    image: cloudflare/cloudflared:latest
+    image: cloudflare/cloudflared:2026.7.3@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
     profiles: ["domain"]
     restart: unless-stopped
-    command: tunnel --no-autoupdate run --token ${CF_TUNNEL_TOKEN}
+    command: ["tunnel", "--no-autoupdate", "run", "--token-file", "/run/secrets/cloudflared-token"]
+    volumes:
+      - type: bind
+        source: ${CF_TUNNEL_TOKEN_PATH:-/dev/null}
+        target: /run/secrets/cloudflared-token
+        read_only: true
+        bind:
+          create_host_path: false
+    networks:
+      - auth-edge
+      - tunnel-egress
     depends_on:
-      - web
+      auth:
+        condition: service_healthy
+    user: "65532:65532"
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=65532,gid=65532,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+
+networks:
+  auth-web:
+    internal: true
+  web-analysis:
+    internal: true
+  auth-edge:
+    internal: true
+  tunnel-egress:
+    driver: bridge
+  nginx-proxy-manager_default:
+    external: true

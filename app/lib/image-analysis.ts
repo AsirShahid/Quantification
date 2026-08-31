@@ -1,9 +1,21 @@
+import { companionPixelDimensions, companionRequired, parseCompanionError, parseCompanionMetadata } from './decode-metadata.mjs';
+
 export type DecodedImage = {
   width: number;
   height: number;
   rgba: Uint8ClampedArray;
   bitDepth: number;
   sourceFormat: string;
+  originalShape: string;
+  originalAxes: string[];
+  selectedShape: string;
+  selectedAxes: string[];
+  channelCount: number;
+  planeSelection: Record<string, number | string>;
+  processing: string;
+  processingLocation: 'browser' | 'private companion';
+  quantitativeStatus: 'experimental' | 'demonstration';
+  sourceSha256: string;
 };
 
 export type RoiRect = { x: number; y: number; width: number; height: number };
@@ -29,7 +41,6 @@ export type AnalysisResult = {
   min: number;
   max: number;
   perimeter: number;
-  intDen: number;
   rawIntDen: number;
   backgroundPixels: number;
   backgroundPositivePixels: number;
@@ -41,80 +52,198 @@ export type AnalysisResult = {
   displayRgba: Uint8ClampedArray;
 };
 
-const MAX_BROWSER_PIXELS = 30_000_000;
+const MAX_BROWSER_PIXELS = 8_000_000;
+const MAX_BROWSER_LOCAL_FILE_BYTES = 128 * 1024 * 1024;
+const MAX_COMPANION_FILE_BYTES = 512 * 1024 * 1024;
+
+export async function sha256Hex(buffer: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', buffer);
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, '0')).join('');
+}
+
+export function tiffDimensions(ifd: { t256?: number[]; t257?: number[] }) {
+  const width = Number(ifd.t256?.[0]);
+  const height = Number(ifd.t257?.[0]);
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width <= 0 || height <= 0) {
+    throw new Error('The TIFF has invalid dimensions.');
+  }
+  return { width, height };
+}
+
+type BrowserTiffIfd = {
+  t258?: number[];
+  t259?: number[];
+  t262?: number[];
+  t277?: number[];
+  t284?: number[];
+  t339?: number[];
+  data?: Uint8Array;
+  isLE?: boolean;
+};
+
+export function tiffMetadata(ifd: BrowserTiffIfd) {
+  const channelCount = Number(ifd.t277?.[0] ?? 1);
+  const bitValues = (ifd.t258?.length ? ifd.t258 : [8]).map(Number);
+  const uniqueBits = new Set(bitValues);
+  if (uniqueBits.size !== 1) throw new Error('TIFF samples with mixed bit depth are not supported.');
+  const bitDepth = bitValues[0];
+  if (![8, 16].includes(bitDepth)) throw new Error(`Unsupported TIFF bit depth: ${bitDepth}. Use unsigned 8- or 16-bit TIFF.`);
+
+  const sampleFormats = (ifd.t339?.length ? ifd.t339 : [1]).map(Number);
+  if (sampleFormats.some((value) => value !== 1)) {
+    throw new Error('Signed and floating-point TIFF values are not supported for quantitative analysis.');
+  }
+  if (Number(ifd.t284?.[0] ?? 1) !== 1) {
+    throw new Error('Planar-separate RGB TIFF is not supported. Convert it to interleaved RGB first.');
+  }
+  if (Number(ifd.t259?.[0] ?? 1) !== 1) {
+    throw new Error('Only uncompressed TIFF is supported in the browser. Export an uncompressed plane first.');
+  }
+  const photometric = Number(ifd.t262?.[0] ?? 1);
+  if (!((photometric === 1 && channelCount === 1) || (photometric === 2 && channelCount === 3))) {
+    throw new Error('Only unsigned BlackIsZero grayscale or interleaved RGB TIFF is supported.');
+  }
+  return { bitDepth, channelCount };
+}
+
+export function tiffRgbaFromDecoded(
+  ifd: Pick<BrowserTiffIfd, 'data' | 'isLE'>,
+  width: number,
+  height: number,
+  bitDepth: number,
+  channelCount: number,
+) {
+  const data = ifd.data;
+  if (!(data instanceof Uint8Array)) throw new Error('The TIFF decoder did not return unsigned sample bytes.');
+  const bytesPerSample = bitDepth / 8;
+  const expectedBytes = width * height * channelCount * bytesPerSample;
+  if (data.byteLength !== expectedBytes) {
+    throw new Error(`Decoded TIFF sample length ${data.byteLength} does not match expected length ${expectedBytes}.`);
+  }
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  const read = bitDepth === 8
+    ? (sample: number) => data[sample]
+    : (sample: number) => {
+        // UTIF.decodeImage normalizes decoded 16-bit sample bytes to
+        // little-endian regardless of the source TIFF byte order.
+        const value = view.getUint16(sample * 2, true);
+        return Math.floor((value * 255 + 32767) / 65535);
+      };
+  for (let pixel = 0; pixel < width * height; pixel++) {
+    const source = pixel * channelCount;
+    const target = pixel * 4;
+    const red = read(source);
+    rgba[target] = red;
+    rgba[target + 1] = channelCount === 1 ? red : read(source + 1);
+    rgba[target + 2] = channelCount === 1 ? red : read(source + 2);
+    rgba[target + 3] = 255;
+  }
+  return rgba;
+}
 
 export async function decodeMicroscopyFile(file: File): Promise<DecodedImage> {
   const extension = file.name.toLowerCase().split('.').pop() ?? '';
-  if (extension === 'nd2') {
-    return decodeNd2WithCompanion(file);
+  const requiresCompanion = companionRequired(file.name);
+  const fileLimit = requiresCompanion ? MAX_COMPANION_FILE_BYTES : MAX_BROWSER_LOCAL_FILE_BYTES;
+  if (file.size > fileLimit) {
+    const limitMb = fileLimit / (1024 * 1024);
+    throw new Error(`The file exceeds the ${limitMb} MB ${requiresCompanion ? 'companion' : 'browser-local'} safety limit.`);
+  }
+  if (requiresCompanion) {
+    return decodeWithCompanion(file);
   }
 
+  const browserLocalSupported = extension === 'tif' || extension === 'tiff' || file.name === 'synthetic-demo-tile.jpg';
+  if (!browserLocalSupported) {
+    throw new Error(`Unsupported image extension: .${extension || 'unknown'}. Use unsigned grayscale/RGB TIFF, JP2, J2K, JPX, or ND2.`);
+  }
   const buffer = await file.arrayBuffer();
-  if (extension === 'tif' || extension === 'tiff') return decodeTiff(buffer);
-  if (extension === 'jp2' || extension === 'j2k' || extension === 'jpx') return decodeJp2(buffer);
-  return decodeBrowserImage(file);
+  const sourceSha256 = await sha256Hex(buffer);
+  if (extension === 'tif' || extension === 'tiff') return decodeTiff(buffer, sourceSha256);
+  return decodeBrowserImage(file, sourceSha256);
 }
 
-async function decodeNd2WithCompanion(file: File): Promise<DecodedImage> {
-  const body = new FormData();
-  body.append('file', file);
+async function decodeWithCompanion(file: File): Promise<DecodedImage> {
+  const extension = file.name.toLowerCase().split('.').pop() ?? '';
   let response: Response;
   try {
-    response = await fetch('/api/decode', { method: 'POST', body });
+    response = await fetch('/api/decode', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/octet-stream',
+        'x-kidneyquant-file-extension': `.${extension}`,
+      },
+      body: file,
+    });
   } catch {
-    throw new Error('The ND2 companion could not be reached. TIFF and JP2 still run directly in the browser.');
+    throw new Error('The private image companion could not be reached. TIFF files can still be opened in the browser.');
   }
   if (!response.ok) {
-    const detail = (await response.json().catch(() => null)) as { error?: string } | null;
+    const detail = (await response.json().catch(() => null)) as { error?: string; detail?: string } | null;
     throw new Error(
-      detail?.error ??
-        'ND2 is enabled in the self-hosted installation. For this private test site, convert the file to OME-TIFF first.',
+      parseCompanionError(detail) ??
+        'The companion could not decode this file. Review the source format, dimensions, and bit depth.',
     );
   }
+  const metadata = parseCompanionMetadata(response.headers);
   const png = await response.blob();
-  const decoded = await decodeBrowserImage(new File([png], `${file.name}.png`, { type: 'image/png' }));
-  return { ...decoded, sourceFormat: 'ND2' };
+  const decoded = await decodeBrowserImage(new File([png], `${file.name}.png`, { type: 'image/png' }), metadata.sourceSha256);
+  const expected = companionPixelDimensions(metadata);
+  if (decoded.width !== expected.width || decoded.height !== expected.height) {
+    throw new Error(`Companion PNG dimensions ${decoded.width}x${decoded.height} contradict selected metadata ${expected.width}x${expected.height}.`);
+  }
+  return {
+    ...decoded,
+    bitDepth: metadata.originalBitDepth,
+    sourceFormat: metadata.sourceFormat,
+    originalShape: metadata.originalShape,
+    originalAxes: metadata.originalAxes,
+    selectedShape: metadata.selectedShape,
+    selectedAxes: metadata.selectedAxes,
+    channelCount: metadata.channelCount,
+    planeSelection: metadata.planeSelection,
+    processing: metadata.processing,
+    processingLocation: metadata.processingLocation,
+    quantitativeStatus: metadata.quantitativeStatus,
+    sourceSha256: metadata.sourceSha256,
+  };
 }
 
-async function decodeTiff(buffer: ArrayBuffer): Promise<DecodedImage> {
+async function decodeTiff(buffer: ArrayBuffer, sourceSha256: string): Promise<DecodedImage> {
   const utifModule = await import('utif');
   const UTIF = utifModule.default ?? utifModule;
   const ifds = UTIF.decode(buffer);
   if (!ifds.length) throw new Error('No image plane was found in this TIFF.');
-  UTIF.decodeImage(buffer, ifds[0]);
-  const rgba = new Uint8ClampedArray(UTIF.toRGBA8(ifds[0]));
-  const width = ifds[0].width;
-  const height = ifds[0].height;
+  if (ifds.length !== 1) throw new Error(`This TIFF contains ${ifds.length} planes. Export one plane before analysis.`);
+  const ifd = ifds[0];
+  const { width, height } = tiffDimensions(ifd);
   validateDimensions(width, height);
-  const bitDepth = Number(ifds[0].t258?.[0] ?? 8);
-  return { width, height, rgba, bitDepth, sourceFormat: 'TIFF' };
+  const { bitDepth, channelCount } = tiffMetadata(ifd);
+
+  UTIF.decodeImage(buffer, ifd);
+  const rgba = tiffRgbaFromDecoded(ifd, width, height, bitDepth, channelCount);
+  const shape = channelCount > 1 ? `${height}x${width}x${channelCount}` : `${height}x${width}`;
+  return {
+    width,
+    height,
+    rgba,
+    bitDepth,
+    sourceFormat: 'TIFF',
+    originalShape: shape,
+    originalAxes: channelCount > 1 ? ['Y', 'X', 'S'] : ['Y', 'X'],
+    selectedShape: shape,
+    selectedAxes: channelCount > 1 ? ['Y', 'X', 'S'] : ['Y', 'X'],
+    channelCount,
+    planeSelection: {},
+    processing: bitDepth === 8 ? 'native-8bit' : 'browser-linear-16bit-to-8bit',
+    processingLocation: 'browser',
+    quantitativeStatus: 'experimental',
+    sourceSha256,
+  };
 }
 
-async function decodeJp2(buffer: ArrayBuffer): Promise<DecodedImage> {
-  const { JpxImage } = await import('jpeg2000');
-  const image = new JpxImage();
-  image.parse(new Uint8Array(buffer));
-  validateDimensions(image.width, image.height);
-  const rgba = new Uint8ClampedArray(image.width * image.height * 4);
-
-  for (const tile of image.tiles) {
-    const components = image.componentsCount;
-    for (let y = 0; y < tile.height; y++) {
-      for (let x = 0; x < tile.width; x++) {
-        const src = (y * tile.width + x) * components;
-        const dst = ((tile.top + y) * image.width + tile.left + x) * 4;
-        const gray = tile.items[src] ?? 0;
-        rgba[dst] = components > 1 ? tile.items[src] : gray;
-        rgba[dst + 1] = components > 1 ? tile.items[src + 1] : gray;
-        rgba[dst + 2] = components > 2 ? tile.items[src + 2] : gray;
-        rgba[dst + 3] = 255;
-      }
-    }
-  }
-  return { width: image.width, height: image.height, rgba, bitDepth: 8, sourceFormat: 'JP2' };
-}
-
-async function decodeBrowserImage(file: File): Promise<DecodedImage> {
+async function decodeBrowserImage(file: File, knownSourceSha256?: string): Promise<DecodedImage> {
   const bitmap = await createImageBitmap(file);
   validateDimensions(bitmap.width, bitmap.height);
   const canvas = document.createElement('canvas');
@@ -125,14 +254,32 @@ async function decodeBrowserImage(file: File): Promise<DecodedImage> {
   context.drawImage(bitmap, 0, 0);
   const rgba = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
   bitmap.close();
-  return { width: canvas.width, height: canvas.height, rgba, bitDepth: 8, sourceFormat: file.type || 'Image' };
+  const shape = `${canvas.height}x${canvas.width}x3`;
+  const sourceSha256 = knownSourceSha256 ?? await sha256Hex(await file.arrayBuffer());
+  return {
+    width: canvas.width,
+    height: canvas.height,
+    rgba,
+    bitDepth: 8,
+    sourceFormat: file.type || 'Image',
+    originalShape: shape,
+    originalAxes: ['Y', 'X', 'S'],
+    selectedShape: shape,
+    selectedAxes: ['Y', 'X', 'S'],
+    channelCount: 3,
+    planeSelection: {},
+    processing: 'native-8bit',
+    processingLocation: 'browser',
+    quantitativeStatus: 'demonstration',
+    sourceSha256,
+  };
 }
 
 function validateDimensions(width: number, height: number) {
   if (!width || !height) throw new Error('The image dimensions are invalid.');
   if (width * height > MAX_BROWSER_PIXELS) {
     throw new Error(
-      `This image contains ${(width * height / 1_000_000).toFixed(1)} million pixels. The test site limit is 30 million pixels per plane; use tiled images or the self-hosted analysis service.`,
+      `This image contains ${(width * height / 1_000_000).toFixed(1)} million pixels. The interactive limit is 8 million pixels per plane; use tiled images.`,
     );
   }
 }
@@ -142,14 +289,10 @@ export function analyzeImage(image: DecodedImage, options: AnalysisOptions): Ana
   const length = width * height;
   const displayRgba = makeDisplayRgba(rgba, length);
   const backgroundMask = options.removeBackground
-    ? findConnectedBackground(displayRgba, width, height, options.backgroundTolerance)
+    ? findConnectedBackground(rgba, width, height, options.backgroundTolerance)
     : new Uint8Array(length);
 
-  let backgroundPixels = countMask(backgroundMask);
-  if (backgroundPixels / length < 0.002) {
-    backgroundMask.fill(0);
-    backgroundPixels = 0;
-  }
+  const backgroundPixels = countMask(backgroundMask);
 
   const tissueMask = new Uint8Array(length);
   const regionMask = new Uint8Array(length);
@@ -188,6 +331,10 @@ export function analyzeImage(image: DecodedImage, options: AnalysisOptions): Ana
     }
   }
 
+  if (analyzedPixels === 0) {
+    throw new Error('No analyzable pixels remain after applying the tissue and ROI masks. Review the background and region settings.');
+  }
+
   let mode = 0;
   for (let i = 1; i < histogram.length; i++) if (histogram[i] > histogram[mode]) mode = i;
   const mean = analyzedPixels ? rawIntDen / analyzedPixels : 0;
@@ -203,7 +350,6 @@ export function analyzeImage(image: DecodedImage, options: AnalysisOptions): Ana
     min: analyzedPixels ? min : 0,
     max: analyzedPixels ? max : 0,
     perimeter: maskPerimeter(positiveMask, width, height),
-    intDen: rawIntDen,
     rawIntDen,
     backgroundPixels,
     backgroundPositivePixels,

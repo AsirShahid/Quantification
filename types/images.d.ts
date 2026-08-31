@@ -2,7 +2,16 @@ declare module 'utif' {
   export type Ifd = {
     width: number;
     height: number;
+    t256?: number[];
+    t257?: number[];
     t258?: number[];
+    t259?: number[];
+    t262?: number[];
+    t277?: number[];
+    t284?: number[];
+    t339?: number[];
+    data?: Uint8Array;
+    isLE?: boolean;
     [key: string]: unknown;
   };
 

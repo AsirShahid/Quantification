@@ -6,6 +6,10 @@ export const metadata: Metadata = {
   title: 'KidneyQuant — Stain analysis workbench',
   description: 'Private microscopy stain quantification for kidney tissue images.',
   robots: { index: false, follow: false },
+  icons: {
+    icon: [{ url: '/favicon.svg', type: 'image/svg+xml' }],
+    apple: '/favicon.svg',
+  },
   openGraph: {
     title: 'KidneyQuant',
     description: 'Private stain analysis for kidney tissue',

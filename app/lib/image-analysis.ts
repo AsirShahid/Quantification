@@ -399,7 +399,7 @@ export function analyzeImage(image: DecodedImage, options: AnalysisOptions): Ana
   };
 }
 
-function stainScore(
+export function stainScore(
   r: number,
   g: number,
   b: number,

@@ -11,6 +11,8 @@ KidneyQuant is a private, self-hostable kidney tissue stain-analysis workbench. 
 - Unsigned, uncompressed, single-plane **BlackIsZero grayscale or interleaved RGB TIFF** decoding locally in the browser; compressed, palette, CMYK, two-sample, alpha, planar-separate, signed, floating-point, and multipage TIFF variants fail closed
 - JP2-family and ND2 decoding through the included private Python companion service
 - Stain modes for alpha-SMA IF, vimentin IF, lotus lectin/LTL IF, Sirius Red, PAS, and H&E
+- Simultaneous RGB and composite/threshold-overlay previews beside independently scrolling desktop controls
+- Per-channel automatic brightness and sampled Otsu threshold suggestions, with remembered manual overrides for the current image; live previews are downsampled, while Analyze image measures full-resolution native pixels
 - Color-coded RGB channel views and exact numeric threshold entry: 0–255 for 8-bit samples, 0–65,535 for 16-bit samples
 - Background-worker image decoding with cancellable loading
 - Sidebar co-staining status and editable stain/channel assignments (including DAPI, ApoJ/Clusterin, and custom markers); selecting a marker switches its preview and fluorescence measurement channel

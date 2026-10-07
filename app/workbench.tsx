@@ -13,7 +13,6 @@ import {
 import {
   analyzeImage,
   thresholdMaximum,
-  type AnalysisResult,
   type DecodedImage,
   type RoiRect,
 } from './lib/image-analysis';
@@ -23,8 +22,10 @@ import {
   type AnalysisRecord,
   type AnalysisSettingsSnapshot,
 } from './lib/analysis-record';
-import { applyChannelViewInPlace, prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
+import { prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
 
+import ChannelTile from './channel-tile';
+import { samplePreview, automaticSettings, displayRanges, renderPreview, type ChannelSettings } from './lib/channel-preview';
 import { loadMicroscopyFile } from './lib/image-loader';
 import StainingPanelControls from './staining-panel';
 import { activeAssignment, type StainingPanel } from './lib/stain-channels';
@@ -35,7 +36,6 @@ type SignalChannel = 'red' | 'green' | 'blue' | 'grayscale';
 type DisplayChannel = 'composite' | 'red' | 'green' | 'blue';
 
 const SYNTHETIC_DEMO_NAME = 'synthetic-demo-tile.jpg';
-const DISPLAY_CHANNELS: DisplayChannel[] = ['composite', 'red', 'green', 'blue'];
 const SIGNAL_CHANNELS: { value: SignalChannel; label: string }[] = [
   { value: 'red', label: 'Red' },
   { value: 'green', label: 'Green' },
@@ -114,9 +114,9 @@ function stainScoreDescription(stain: string, signalChannel: SignalChannel) {
   if (stain === 'H&E — hematoxylin') return 'Score = clamp(B − (R + G) / 2 + 64), integer 0–255.';
   if (stain === 'H&E — eosin') return 'Score = clamp((R + B) / 2 − G + 64), integer 0–255.';
   if (stain.includes('(IF)')) return signalChannel === 'grayscale'
-    ? 'Score = mean of R, G, and B display components, integer 0–255.'
-    : `Score = ${signalChannel} display component intensity, integer 0–255.`;
-  return 'Score = mean of R, G, and B display components, integer 0–255.';
+    ? 'Score = mean of R, G, and B source components, integer 0–255.'
+    : `Score = ${signalChannel} source channel intensity, integer 0–255.`;
+  return 'Score = mean of R, G, and B source components, integer 0–255.';
 }
 
 function errorMessage(value: unknown, fallback: string) {
@@ -137,12 +137,6 @@ function downloadText(contents: string, type: string, filename: string) {
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
-}
-
-function availableDisplayChannels(image: DecodedImage | null): DisplayChannel[] {
-  if (!image || image.channelCount >= 3) return DISPLAY_CHANNELS;
-  if (image.channelCount === 2) return ['composite', 'red', 'green'];
-  return ['composite'];
 }
 
 function availableSignalChannels(image: DecodedImage | null) {
@@ -193,7 +187,6 @@ export default function Workbench({ userName }: { userName: string }) {
   const [sourceSize, setSourceSize] = useState(0);
   const [sourceLastModified, setSourceLastModified] = useState(0);
   const [image, setImage] = useState<DecodedImage | null>(null);
-  const [result, setResult] = useState<AnalysisResult | null>(null);
   const [analysisRecord, setAnalysisRecord] = useState<AnalysisRecord | null>(null);
   const [stain, setStain] = useState('Sirius Red');
   const [stainingPanel, setStainingPanel] = useState<StainingPanel>({
@@ -214,10 +207,40 @@ export default function Workbench({ userName }: { userName: string }) {
   const [draggingFile, setDraggingFile] = useState(false);
   const [folderFiles, setFolderFiles] = useState<File[]>([]);
   const [folderIndex, setFolderIndex] = useState(0);
-  const [displayChannel, setDisplayChannel] = useState<DisplayChannel>('composite');
   const [message, setMessage] = useState('Loading the bundled procedurally generated synthetic demo tile…');
   const [error, setError] = useState('');
   const [thresholdMax, setThresholdMax] = useState(255);
+  const [brightness, setBrightness] = useState(1);
+  const [channelSettings, setChannelSettings] = useState<Record<string, ChannelSettings>>({});
+  const previewImage = useMemo(() => image ? samplePreview(image) : null, [image]);
+  const ranges = useMemo(() => previewImage ? displayRanges(previewImage) : [255, 255, 255], [previewImage]);
+  const suggestions = useMemo(() => Object.fromEntries(SIGNAL_CHANNELS.map(({ value }) => [value,
+    previewImage ? automaticSettings(previewImage, stain, value) : { minimum: 0, maximum: 255, brightness: 1 },
+  ])) as Record<SignalChannel, ChannelSettings>, [previewImage, stain]);
+
+  useEffect(() => {
+    if (!previewImage) return;
+    const frame = requestAnimationFrame(() => {
+      const next = channelSettings[`${stain}:${signalChannel}`] ?? suggestions[signalChannel];
+      setMinThreshold(next.minimum);
+      setMaxThreshold(next.maximum);
+      setBrightness(next.brightness);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [previewImage, stain, signalChannel, suggestions, channelSettings]);
+
+  const previewOptions = useMemo(() => ({
+    stain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
+    outsideMode, structure, rois: rois.map((roi) => ({
+      x: roi.x * (previewImage?.width ?? 1) / (image?.width ?? 1),
+      y: roi.y * (previewImage?.height ?? 1) / (image?.height ?? 1),
+      width: roi.width * (previewImage?.width ?? 1) / (image?.width ?? 1),
+      height: roi.height * (previewImage?.height ?? 1) / (image?.height ?? 1),
+    })),
+  }), [stain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance, outsideMode, structure, rois, previewImage, image]);
+  const previewBrightness = useMemo(() => image?.channelCount === 1 || signalChannel === 'grayscale' ? [brightness, brightness, brightness]
+    : (['red', 'green', 'blue'] as const).map((channel) => channel === signalChannel ? brightness : channelSettings[`${stain}:${channel}`]?.brightness ?? 1),
+  [image, brightness, signalChannel, channelSettings, stain]);
 
   const initials = useMemo(
     () =>
@@ -233,7 +256,6 @@ export default function Workbench({ userName }: { userName: string }) {
 
   const invalidateAnalysis = useCallback(() => {
     analysisRequestId.current++;
-    setResult(null);
     setAnalysisRecord(null);
     setError('');
     setMessage('Settings changed — rerun analysis');
@@ -248,7 +270,6 @@ export default function Workbench({ userName }: { userName: string }) {
         return;
       }
       if (structure !== 'Whole tissue' && rois.length === 0) {
-        setResult(null);
         setAnalysisRecord(null);
         setError('No analyzable ROI is defined. Add at least one region, then rerun analysis.');
         return;
@@ -275,7 +296,6 @@ export default function Workbench({ userName }: { userName: string }) {
       const requestId = ++analysisRequestId.current;
       setLoading(true);
       setError('');
-      setResult(null);
       setAnalysisRecord(null);
       setMessage('Analyzing image…');
       // Two animation frames guarantee that the working state is painted before
@@ -293,7 +313,6 @@ export default function Workbench({ userName }: { userName: string }) {
               result: nextResult,
               settings,
             });
-            setResult(nextResult);
             setAnalysisRecord(nextRecord);
             setMessage(
               settings.removeBackground && settings.outsideMode === 'report'
@@ -302,7 +321,6 @@ export default function Workbench({ userName }: { userName: string }) {
             );
           } catch (analysisError) {
             if (requestId === analysisRequestId.current) {
-              setResult(null);
               setAnalysisRecord(null);
               setError(errorMessage(analysisError, 'The image could not be analyzed.'));
             }
@@ -326,10 +344,9 @@ export default function Workbench({ userName }: { userName: string }) {
     analysisRequestId.current++;
     setLoading(true);
     setError('');
-    setResult(null);
     setAnalysisRecord(null);
     setImage(null);
-    setDisplayChannel('composite');
+    setChannelSettings({});
     setStainingPanel((current) => ({ ...current, activeId: null }));
     setSourceName(displayName);
     setSourceSize(file.size);
@@ -396,59 +413,25 @@ export default function Workbench({ userName }: { userName: string }) {
     if (!context) return;
     context.clearRect(0, 0, canvas.width, canvas.height);
     context.drawImage(baseCanvas, 0, 0);
-    drawRoiOverlay(context, canvas.width, roisRef.current, draftRoi);
-  }, []);
+    if (image) {
+      context.save();
+      context.scale(canvas.width / image.width, canvas.height / image.height);
+      drawRoiOverlay(context, image.width, roisRef.current, draftRoi);
+      context.restore();
+    }
+  }, [image]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || !image) return;
+    if (!canvas || !previewImage) return;
     const baseCanvas = document.createElement('canvas');
-    canvas.width = image.width;
-    canvas.height = image.height;
-    baseCanvas.width = image.width;
-    baseCanvas.height = image.height;
-    const context = baseCanvas.getContext('2d');
-    if (!context) return;
-
-    // Build the expensive RGBA frame only when the image/view changes. ROI motion
-    // redraws this cached canvas instead of cloning and rewriting every source pixel.
-    const source = view === 'original' || !result ? image.rgba : result.displayRgba;
-    const needsWorkingCopy = displayChannel !== 'composite' || Boolean(result && view !== 'original');
-    let frame: ImageData;
-    if (!needsWorkingCopy) {
-      frame = new ImageData(source as Uint8ClampedArray<ArrayBuffer>, image.width, image.height);
-    } else {
-      // Never mutate arrays owned by image/result state. Transform an independent
-      // buffer only when a channel or analysis overlay actually requires writes.
-      const pixels = new Uint8ClampedArray(source);
-      if (displayChannel !== 'composite') applyChannelViewInPlace(pixels, displayChannel);
-      if (result && view !== 'original') {
-        for (let i = 0; i < result.positiveMask.length; i++) {
-          const p = i * 4;
-          if (view === 'mask') {
-            const selected = result.regionMask[i] === 1;
-            const positive = result.positiveMask[i] === 1;
-            pixels[p] = positive ? 207 : selected ? 235 : 28;
-            pixels[p + 1] = positive ? 54 : selected ? 241 : 36;
-            pixels[p + 2] = positive ? 112 : selected ? 237 : 32;
-            pixels[p + 3] = 255;
-          } else if (result.positiveMask[i]) {
-            pixels[p] = Math.round(pixels[p] * 0.35 + 214 * 0.65);
-            pixels[p + 1] = Math.round(pixels[p + 1] * 0.35 + 52 * 0.65);
-            pixels[p + 2] = Math.round(pixels[p + 2] * 0.35 + 112 * 0.65);
-          } else if (!result.tissueMask[i]) {
-            pixels[p] = Math.round(pixels[p] * 0.28);
-            pixels[p + 1] = Math.round(pixels[p + 1] * 0.28);
-            pixels[p + 2] = Math.round(pixels[p + 2] * 0.28);
-          }
-        }
-      }
-      frame = new ImageData(pixels, image.width, image.height);
-    }
-    context.putImageData(frame, 0, 0);
+    canvas.width = baseCanvas.width = previewImage.width;
+    canvas.height = baseCanvas.height = previewImage.height;
+    const pixels = renderPreview(previewImage, 'composite', ranges, previewBrightness, previewOptions, view);
+    baseCanvas.getContext('2d')?.putImageData(new ImageData(pixels, previewImage.width, previewImage.height), 0, 0);
     baseCanvasRef.current = baseCanvas;
     paintCanvas();
-  }, [image, displayChannel, result, view, paintCanvas]);
+  }, [previewImage, ranges, previewBrightness, previewOptions, view, paintCanvas]);
 
   useEffect(() => {
     roisRef.current = rois;
@@ -619,8 +602,7 @@ export default function Workbench({ userName }: { userName: string }) {
     if (selected) {
       setStain(`${selected.marker.trim()} (IF)`);
       setSignalChannel(selected.channel);
-      setDisplayChannel(selected.channel === 'grayscale' ? 'composite' : selected.channel);
-      setView('original');
+      setView('overlay');
     }
     invalidateAnalysis();
   };
@@ -634,7 +616,26 @@ export default function Workbench({ userName }: { userName: string }) {
   };
 
   const chooseDisplayChannel = (channel: DisplayChannel) => {
-    setDisplayChannel(channel);
+    if (channel !== 'composite') {
+      setSignalChannel(channel);
+      setStainingPanel((current) => ({ ...current, activeId: null }));
+      invalidateAnalysis();
+    }
+  };
+
+  const updateThreshold = (minimum: number, maximum: number) => {
+    setMinThreshold(minimum);
+    setMaxThreshold(maximum);
+    setChannelSettings((current) => ({ ...current, [`${stain}:${signalChannel}`]: { minimum, maximum, brightness } }));
+    setView('overlay');
+    invalidateAnalysis();
+  };
+
+  const resetAutomatic = () => {
+    const next = suggestions[signalChannel];
+    setChannelSettings((current) => ({ ...current, [`${stain}:${signalChannel}`]: next }));
+    setMinThreshold(next.minimum); setMaxThreshold(next.maximum); setBrightness(1);
+    setView('overlay'); invalidateAnalysis();
   };
 
   const toggleDrawing = () => {
@@ -661,7 +662,6 @@ export default function Workbench({ userName }: { userName: string }) {
   };
 
   const metrics = analysisRecord?.metrics;
-  const displayChannels = availableDisplayChannels(image);
   const signalChannels = availableSignalChannels(image);
   const channelMappingDisclosure = image?.channelCount === 2
     ? 'Two source channels mapped: channel 1 → display R and channel 2 → display G. No Blue source channel is present.'
@@ -728,14 +728,21 @@ export default function Workbench({ userName }: { userName: string }) {
 
           {removeBackground && <><label className="field-label compact" htmlFor="outside-mode">Outside-tissue handling</label><select id="outside-mode" className="select-input" value={outsideMode} onChange={(event) => { setOutsideMode(event.target.value as OutsideMode); invalidateAnalysis(); }}><option value="exclude">Exclude from calculations</option><option value="report">Exclude and report separately</option></select><label className="field-label compact" htmlFor="background-tolerance">Background tolerance <span>{backgroundTolerance}</span></label><input id="background-tolerance" className="single-range" type="range" min="4" max="60" value={backgroundTolerance} onChange={(event) => { setBackgroundTolerance(Number(event.target.value)); invalidateAnalysis(); }} /></>}
 
+          <label className="field-label" htmlFor="channel-brightness">{signalChannel} display brightness <span>{brightness.toFixed(1)}×</span></label>
+          <input id="channel-brightness" type="range" className="single-range" min="0.2" max="3" step="0.1" disabled={loading} value={brightness} onChange={(event) => {
+            const value = Number(event.target.value); setBrightness(value);
+            setChannelSettings((current) => ({ ...current, [`${stain}:${signalChannel}`]: { minimum: minThreshold, maximum: maxThreshold, brightness: value } }));
+          }} />
+          <button type="button" className="stain-action" disabled={!image || loading} onClick={resetAutomatic}>Auto brightness &amp; threshold</button>
+          <p className="validation-note">Each channel starts with automatic brightness and an Otsu threshold suggestion from the preview. Manual settings are remembered per stain/channel until another image is opened. Brightness affects display only.</p>
           <div className="threshold-card">
             <div className="threshold-title"><strong>Positive stain threshold</strong><span>{thresholdMax === 65535 ? '16-bit' : '8-bit'}</span></div>
             <label htmlFor="minimum-threshold-value">Minimum</label>
-            <input disabled={loading} id="minimum-threshold-value" className="text-input" type="number" min="0" max={maxThreshold} step="1" value={minThreshold} onChange={(event) => { setMinThreshold(Math.max(0, Math.min(Math.round(Number(event.target.value)), maxThreshold))); invalidateAnalysis(); }} />
-            <input disabled={loading} id="minimum-threshold" aria-label="Minimum threshold slider" className="single-range berry" type="range" min="0" max={thresholdMax} step="1" value={minThreshold} onChange={(event) => { setMinThreshold(Math.min(Number(event.target.value), maxThreshold)); invalidateAnalysis(); }} />
+            <input disabled={loading} id="minimum-threshold-value" className="text-input" type="number" min="0" max={maxThreshold} step="1" value={minThreshold} onChange={(event) => { updateThreshold(Math.max(0, Math.min(Math.round(Number(event.target.value)), maxThreshold)), maxThreshold); }} />
+            <input disabled={loading} id="minimum-threshold" aria-label="Minimum threshold slider" className="single-range berry" type="range" min="0" max={thresholdMax} step="1" value={minThreshold} onChange={(event) => { updateThreshold(Math.min(Number(event.target.value), maxThreshold), maxThreshold); }} />
             <label htmlFor="maximum-threshold-value">Maximum</label>
-            <input disabled={loading} id="maximum-threshold-value" className="text-input" type="number" min={minThreshold} max={thresholdMax} step="1" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.min(thresholdMax, Math.max(Math.round(Number(event.target.value)), minThreshold))); invalidateAnalysis(); }} />
-            <input disabled={loading} id="maximum-threshold" aria-label="Maximum threshold slider" className="single-range berry" type="range" min="0" max={thresholdMax} step="1" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.max(Number(event.target.value), minThreshold)); invalidateAnalysis(); }} />
+            <input disabled={loading} id="maximum-threshold-value" className="text-input" type="number" min={minThreshold} max={thresholdMax} step="1" value={maxThreshold} onChange={(event) => { updateThreshold(minThreshold, Math.min(thresholdMax, Math.max(Math.round(Number(event.target.value)), minThreshold))); }} />
+            <input disabled={loading} id="maximum-threshold" aria-label="Maximum threshold slider" className="single-range berry" type="range" min="0" max={thresholdMax} step="1" value={maxThreshold} onChange={(event) => { updateThreshold(minThreshold, Math.max(Number(event.target.value), minThreshold)); }} />
             <p className="validation-note">Range: 0–{formatInteger(thresholdMax)}. Both limits are inclusive.</p>
           </div>
           <p className="validation-note">{thresholdMax === 65535
@@ -758,19 +765,25 @@ export default function Workbench({ userName }: { userName: string }) {
             <input ref={folderInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" multiple hidden onChange={onFolderChange} {...{ webkitdirectory: '', directory: '' }} />
           </div>
 
-          {image && <div className="channel-bar" aria-label="Image display channels"><b aria-hidden="true">C</b>{displayChannels.map((channel) => <button key={channel} type="button" disabled={loading} aria-label={`${channel} channel view`} aria-pressed={displayChannel === channel} className={displayChannel === channel ? 'active' : ''} onClick={() => chooseDisplayChannel(channel)}>{channel === 'composite' ? 'Composite' : channel[0].toUpperCase()}</button>)}{channelMappingDisclosure && <span className="channel-mapping">{channelMappingDisclosure}</span>}</div>}
+          {image && channelMappingDisclosure && <p className="live-preview-note">{channelMappingDisclosure}</p>}
 
           <div className={`image-canvas ${draggingFile ? 'dragging' : ''} ${drawing ? 'drawing' : ''}`} onDragEnter={(event) => { event.preventDefault(); setDraggingFile(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDraggingFile(false)} onDrop={onDrop}>
-            {image && <canvas ref={canvasRef} aria-label="Microscopy image analysis preview" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} />}
+            {image && previewImage && <div className="channel-grid">
+              <div className="channel-tile"><div className="tile-title">Composite / overlay</div><div className="channel-image"><canvas ref={canvasRef} aria-label="Microscopy image analysis preview" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} /></div><small>{view === 'original' ? 'Composite image' : `Live ${signalChannel} threshold ${view}`}</small></div>
+              {(['red', 'green', 'blue'] as const).map((channel) => <ChannelTile key={channel} image={previewImage} channel={channel} ranges={ranges} options={previewOptions} view={view === 'mask' ? 'mask' : 'original'}
+                settings={channel === signalChannel ? { minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[`${stain}:${channel}`] ?? suggestions[channel]}
+                active={signalChannel === channel} onSelect={() => chooseDisplayChannel(channel)} />)}
+            </div>}
             {!image && <div className="empty-canvas"><strong>No image open</strong><span>Choose a TIFF, JP2, ND2 file, or folder.</span></div>}
             {(draggingFile || !image) && <button type="button" className="central-dropzone" disabled={loading} onClick={() => fileInput.current?.click()}><strong>Drop ND2, TIFF, or JP2</strong><span>or choose a file</span></button>}
-            {image && <button type="button" className="dropzone" onClick={() => fileInput.current?.click()}><strong>Drop ND2, TIFF, or JP2</strong><span>or choose a file</span></button>}
+
             {drawing && <div className="drawing-hint">Drag on the image to add a region</div>}
             <div className="legend"><span><i className="positive" /> Positive stain</span><span><i className="structure" /> Selected region</span><span><i className="excluded" /> Excluded</span></div>
           </div>
 
           <div className={`analysis-message ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'} aria-live={error ? 'assertive' : 'polite'}><i>{error ? '!' : loading ? '…' : analysisRecord ? '✓' : 'i'}</i><span>{error || message}</span></div>
-          <div className="stage-caption">
+          <p className="live-preview-note">Live preview uses a smaller image for responsiveness. Click Analyze image for full-resolution measurements and exports. Draw ROIs on the composite view.</p>
+          <details className="image-details"><summary>Image details</summary><div className="stage-caption">
             <span>{image ? `${image.width.toLocaleString()} × ${image.height.toLocaleString()} px` : '—'}</span>
             <span>{image ? `Source: ${image.sourceFormat}` : '—'}</span>
             <span>{image ? `Source bit depth: ${image.bitDepth}-bit` : '—'}</span>
@@ -781,7 +794,7 @@ export default function Workbench({ userName }: { userName: string }) {
             <span>{image ? `Plane selection: ${formatPlaneSelection(image.planeSelection)}` : '—'}</span>
             <span>{image ? `Processing: ${image.processing} (${image.processingLocation})` : '—'}</span>
             <span>{removeBackground ? 'Background separation on' : 'Background included'}</span>
-          </div>
+          </div></details>
           {image && <p className="validation-note" style={{ padding: '0 15px 12px', margin: 0 }}>
             {image.quantitativeStatus === 'demonstration'
               ? `Bundled ${SYNTHETIC_DEMO_NAME} is procedurally generated synthetic data with no specimen or acquisition. Demonstration only; measurements are experimental and not validated.`

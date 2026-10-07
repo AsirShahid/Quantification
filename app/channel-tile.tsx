@@ -27,9 +27,8 @@ export default function ChannelTile({ image, channel, ranges, settings, options,
     context?.putImageData(new ImageData(pixels,image.width,image.height),0,0);
   },[image,channel,displayMaximum,displayMinimum,brightness,minimum,maximum,stain,removeBackground,backgroundTolerance,outsideMode,structure,rois,view,available]);
   return <div className={`channel-tile ${active ? 'selected' : ''}`}>
-    <button type="button" disabled={!available || disabled} onClick={onSelect}>{image.analysisWorkflow==='sirius-magenta' && channel==='red'?'Sirius Red · magenta':channel[0].toUpperCase() + channel.slice(1)}{active ? ' · editing' : ''}</button>
+    <button type="button" className="channel-heading" title={markerLabel || undefined} disabled={!available || disabled} onClick={onSelect}><span>{image.analysisWorkflow==='sirius-magenta' && channel==='red'?'Sirius Red · magenta':channel[0].toUpperCase() + channel.slice(1)}{active ? ' · editing' : ''}</span>{markerLabel && <span className="channel-heading-marker">{markerLabel}</span>}</button>
     <div className="channel-image">{available ? <button type="button" className="channel-image-select" disabled={disabled} onClick={onSelect} aria-label={`Select ${channel} channel`}><canvas ref={canvas} width={image.width} height={image.height} aria-label={`${channel} channel preview`} /></button> : <span className="unavailable-channel">No {channel} source channel</span>}</div>
-    {markerLabel && <small className="channel-marker">{markerLabel}</small>}
 
   </div>;
 }

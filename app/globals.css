@@ -123,3 +123,55 @@ button,input,select { font:inherit; } button { cursor:pointer; } button:disabled
 .folder-nav select { max-width: min(320px, 35vw); min-width: 100px; padding: .45rem; border: 1px solid var(--line, #cdd5df); border-radius: 6px; font: inherit; }
 .group-summary { padding: 12px 0; border-bottom: 1px solid #dbe3ec; }
 .group-summary p { margin: .4rem 0; font-size: 14px; }
+
+/* A compact header and three simultaneous panes prioritize the microscopy images. */
+.topbar { height:44px; padding:0 16px; }
+.brand-mark { width:28px; height:28px; border-radius:8px; }
+.brand div>span { display:none; }
+.brand p { font-size:15px; }
+.profile { width:28px; height:28px; }
+.privacy-state { padding:4px 10px; }
+.workspace-heading.compact-heading { max-width:none; height:48px; padding:8px 16px; align-items:center; }
+.compact-heading h1 { font:700 19px/1.2 Arial,Helvetica,sans-serif; letter-spacing:0; }
+.compact-heading .format-badges span { padding:4px 7px; }
+.workbench-grid.compact-workspace { max-width:none; height:calc(100dvh - 92px); min-height:0; padding:0 12px 10px; gap:10px; grid-template-columns:250px minmax(0,1fr) 260px; grid-template-rows:minmax(0,1fr); align-items:stretch; }
+.compact-workspace>.control-panel,.compact-workspace>.results-panel,.compact-workspace>.image-stage { position:relative; top:auto; grid-row:1; height:100%; min-height:0; max-height:none; border-radius:12px; }
+.compact-workspace>.control-panel { grid-column:1; padding:14px; overflow:auto; }
+.compact-workspace>.image-stage { grid-column:2; overflow:hidden; }
+.compact-workspace>.results-panel { grid-column:3; padding:14px; }
+.compact-workspace .results-scroll { flex:1; max-height:none; }
+.compact-workspace .stage-toolbar { flex:none; padding:6px 8px; gap:6px; min-height:44px; }
+.compact-workspace .image-canvas { flex:1; min-height:0; }
+.compact-workspace .channel-grid { height:100%; padding:6px; gap:6px; grid-template-columns:repeat(2,minmax(0,1fr)); grid-template-rows:repeat(2,minmax(0,1fr)); }
+.compact-workspace .channel-tile { display:flex; flex-direction:column; min-height:0; border-radius:6px; }
+.compact-workspace .channel-tile>button,.compact-workspace .tile-title { flex:none; min-height:26px; padding:4px 7px; font-size:13px; line-height:18px; }
+.channel-heading { display:flex; align-items:center; gap:8px; }
+.channel-heading>span:first-child { flex:none; }
+.channel-heading-marker { margin-left:auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; font-weight:400; color:#c2d4c8; }
+.compact-workspace .channel-image { flex:1; height:auto; min-height:0; overflow:hidden; }
+.compact-workspace .channel-image canvas { width:100%; height:100%; object-fit:contain; object-position:center; }
+.compact-workspace .analysis-message { flex:none; min-height:30px; padding:5px 8px; }
+.compact-workspace .image-details { flex:none; }
+.compact-workspace .image-details summary { padding:6px 10px; }
+.compact-workspace .image-details[open] { max-height:25dvh; overflow:auto; }
+@media(min-width:761px) and (max-width:1099px) {
+ .workbench-grid.compact-workspace { grid-template-columns:215px minmax(0,1fr) 225px; padding-inline:8px; gap:8px; }
+ .compact-workspace>.control-panel,.compact-workspace>.results-panel { padding:10px; }
+ .compact-workspace .folder-nav select { max-width:150px; }
+}
+@media(max-width:760px) {
+ .topbar { min-height:44px; height:auto; padding:6px 10px; }
+ .topbar>.brand { flex-basis:auto; }
+ .privacy-state { font-size:10px; margin:0; }
+ .workspace-heading.compact-heading { height:auto; min-height:40px; padding:6px 10px; flex-direction:row; gap:8px; }
+ .compact-heading h1 { font-size:17px; }
+ .workbench-grid.compact-workspace { display:flex; flex-direction:column; height:auto; padding:0 8px 12px; }
+ .compact-workspace>.image-stage { order:0; height:70dvh; min-height:380px; }
+ .compact-workspace>.control-panel { order:1; height:auto; }
+ .compact-workspace>.results-panel { order:2; height:auto; }
+ .compact-workspace .results-scroll { max-height:65dvh; }
+ .channel-heading-marker { display:none; }
+}
+@media(min-width:761px) and (max-height:600px) {
+ .workbench-grid.compact-workspace { height:510px; }
+}

@@ -28,7 +28,7 @@ import { NumberField } from './channel-controls';
 import RoiEditor from './roi-editor';
 import ChannelTile from './channel-tile';
 import ResultsPanel from './results-panel';
-import { analyzeChannels } from './lib/channel-analysis';
+import { analyzeChannels, type AnalysisScope } from './lib/channel-analysis';
 import ChannelControls from './channel-controls';
 import { samplePreview, channelSettingsKey, automaticSettings, displayRanges, renderPreview, type ChannelSettings } from './lib/channel-preview';
 import { loadMicroscopyFile } from './lib/image-loader';
@@ -202,6 +202,10 @@ export default function Workbench({ userName }: { userName: string }) {
     assignments: [{ id: 'primary', marker: 'Lotus lectin / LTL', channel: 'green', reagent: '' }],
   });
   const [signalChannel, setSignalChannel] = useState<SignalChannel>('green');
+  const [analysisScope,setAnalysisScope]=useState<AnalysisScope>('all');
+  const effectiveScope=profile==='sirius-magenta'?'red':analysisScope;
+  const scopeAvailable=effectiveScope==='all'||availableSignalChannels(image).some(channel=>channel.value===effectiveScope);
+  const scopeLabel=profile==='sirius-magenta'?'Sirius Red score':analysisScope==='all'?'all channels':`${analysisScope} channel`;
   const [structure, setStructure] = useState('Whole tissue');
   const [minThreshold, setMinThreshold] = useState(6);
   const [maxThreshold, setMaxThreshold] = useState(255);
@@ -327,7 +331,7 @@ export default function Workbench({ userName }: { userName: string }) {
         window.requestAnimationFrame(() => {
           if (requestId !== analysisRequestId.current) return;
           try {
-            const records = analyzeChannels(decoded, settings, channelSettings, provenance);
+            const records = analyzeChannels(decoded, settings, channelSettings, provenance, effectiveScope);
             if (requestId !== analysisRequestId.current) return;
             setChannelRecords(records);
             if(acceptedRef.current) {
@@ -353,7 +357,7 @@ export default function Workbench({ userName }: { userName: string }) {
     },
     [
       image, stain, stainingPanel, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
-      outsideMode, structure, rois, userName, sampleId, sourceName, sourceSize, sourceLastModified, channelSettings, studySample, references, groupName,
+      outsideMode, structure, rois, userName, sampleId, sourceName, sourceSize, sourceLastModified, channelSettings, studySample, references, groupName, effectiveScope,
     ],
   );
 
@@ -737,7 +741,7 @@ export default function Workbench({ userName }: { userName: string }) {
           const required=profile==='sirius-magenta'?['red']:decoded.channelCount===1?['grayscale']:decoded.channelCount===2?['red','green']:['red','green','blue'];
           if(!shared || required.some(c=>!accepted[channelSettingsKey(stain,c as SignalChannel)])) throw new Error('Channel set differs from reference tiles.');
           const settings:AnalysisSettingsSnapshot={stain,stainingPanel,signalChannel:channel,minThreshold:shared.minimum,maxThreshold:shared.maximum,structure,rois:[],removeBackground,backgroundTolerance,outsideMode};
-          const records=analyzeChannels(decoded,settings,accepted,{analyst:userName,sampleId:studySample.trim()||sampleId,groupName:groupName.trim()||'Ungrouped',sourceName:name,sourceSize:file.size,sourceLastModified:file.lastModified});
+          const records=analyzeChannels(decoded,settings,accepted,{analyst:userName,sampleId:studySample.trim()||sampleId,groupName:groupName.trim()||'Ungrouped',sourceName:name,sourceSize:file.size,sourceLastModified:file.lastModified},effectiveScope);
           const entry:StudyTile={id:JSON.stringify([groupName,studySample||sampleId,stain,structure,decoded.sourceSha256,name]),name,records,screenshots:captureChannels(decoded,accepted,settings),displaySettings:structuredClone(accepted),reference:!!reference};
           setStudyTiles(current=>[...current.filter(r=>r.id!==entry.id),entry]);
         } catch(cause) {failures.push(`${name}: ${errorMessage(cause,'Failed')}`);}
@@ -838,8 +842,8 @@ export default function Workbench({ userName }: { userName: string }) {
             {references.length>0 && <details><summary>Review reference thresholds</summary>{references.map(r=><div key={r.id} className="reference-row"><strong>{r.name}</strong>{Object.entries(r.settings).map(([key,v])=><div key={key}>{key.split(':').pop()}: {v.minimum}–{v.maximum}</div>)}<button disabled={!!accepted} type="button" onClick={()=>setReferences(current=>current.filter(item=>item.id!==r.id))}>Remove</button></div>)}</details>}
             {references.length>0 && <div className="validation-note">{Object.entries(groupAverageThresholds(references,profile==='sirius-magenta')).map(([key,v])=><div key={key}>{key.split(':').pop()}: mean {v.average.toFixed(4)} → applied {v.minimum}; max {v.maximum}</div>)}</div>}
             <button type="button" className="export-button" disabled={!references.length||!!accepted||loading} onClick={acceptThresholds}>{accepted?'Shared thresholds locked':'Accept average thresholds'}</button>
-            <button type="button" className="export-button" disabled={!accepted||!folderFiles.length||loading||structure!=='Whole tissue'||!!rois.length} onClick={analyzeFolder}>Quantify folder ({folderFiles.length} tiles)</button>
-            <p className="validation-note">For glomeruli or manual tissue crops: outline each tile, then Analyze all channels to save it. Folder automation is for whole images only; outlines are never copied to another tile.</p>
+            <button type="button" className="export-button" disabled={!accepted||!folderFiles.length||loading||structure!=='Whole tissue'||!!rois.length||!scopeAvailable} onClick={analyzeFolder}>Quantify folder ({folderFiles.length} tiles) · {scopeLabel}</button>
+            <p className="validation-note">For glomeruli or manual tissue crops: outline each tile, then Analyze to save it. Folder automation is for whole images only; outlines are never copied to another tile.</p>
             <p className="validation-note">Results are kept in this browser session. Export before closing or refreshing the page.</p><p>{studyTiles.length} tiles saved for this sample · {projectTiles.length} tiles in completed samples</p><button type="button" className="export-button" disabled={(!studyTiles.length&&!references.length)||!image||loading} onClick={finishSample}>Next sample · keep group thresholds</button>
             <button type="button" className="export-button" disabled={(!references.length&&!studyTiles.length)||loading} onClick={finishGroup}>Save group / switch group</button><details><summary>Saved tiles</summary>{studyTiles.map(tile=><div className="reference-row" key={tile.id}>{tile.name}<button type="button" onClick={()=>setStudyTiles(current=>current.filter(t=>t.id!==tile.id))}>Remove result</button></div>)}</details>
             <button type="button" className="stain-action" disabled={loading} onClick={resetStudy}>Clear current group thresholds / unsaved results</button>
@@ -880,7 +884,12 @@ export default function Workbench({ userName }: { userName: string }) {
           </div>
           <p className="validation-note">{profile==='sirius-magenta' ? 'Sirius Red score = (max(R,G,B) − G) / max(R,G,B), range 0–1. The maximum 1 includes every finite magenta score.' : 'Detection thresholds operate on the 8-bit analysis copy, independently of later appearance adjustments.'}</p>
 
-          <button type="button" className="primary-button" disabled={!image || loading || !sampleId.trim()} onClick={() => runAnalysis()}>{loading ? 'Working…' : accepted ? 'Analyze all channels · save tile' : 'Analyze all channels'} <span>→</span></button>
+          <label className="field-label" htmlFor="analysis-scope">Analysis scope</label>
+          <select id="analysis-scope" className="select-input" value={effectiveScope} disabled={loading||profile==='sirius-magenta'} onChange={event=>{setAnalysisScope(event.target.value as AnalysisScope);invalidateAnalysis();}}>
+            {profile==='sirius-magenta'?<option value="red">Sirius Red · magenta score</option>:<><option value="all">All available channels</option>{SIGNAL_CHANNELS.map(({value,label})=><option key={value} value={value} disabled={!availableSignalChannels(image).some(channel=>channel.value===value)}>{label}{availableSignalChannels(image).some(channel=>channel.value===value)?'':' — unavailable'}</option>)}</>}
+          </select>
+          <p className="validation-note">Applies to this tile and folder runs. All four images remain visible. Saved tiles keep their previous results until you analyze those tiles again.</p>
+          <button type="button" className="primary-button" disabled={!image || loading || !sampleId.trim() || !scopeAvailable} onClick={() => runAnalysis()}>{loading ? 'Working…' : `Analyze ${scopeLabel}${accepted?' · save tile':''}`} <span>→</span></button>
           <p className="validation-note">Research-use workflow. Thresholds and ROI regions must be reviewed before statistical analysis.</p>
         </fieldset></aside>
 
@@ -926,7 +935,7 @@ export default function Workbench({ userName }: { userName: string }) {
             <span>{removeBackground ? 'Background separation on' : 'Background included'}</span>
           </div>
           {image && channelMappingDisclosure && <p className="live-preview-note">{channelMappingDisclosure}</p>}
-          <p className="live-preview-note">Live preview uses a smaller image for responsiveness. Click Analyze all channels for full-resolution measurements and exports. Draw tissue or glomerular outlines on the composite view.</p>
+          <p className="live-preview-note">Live preview uses a smaller image for responsiveness. Click Analyze for full-resolution measurements of the chosen channels and exports. Draw tissue or glomerular outlines on the composite view.</p>
           {image && <p className="validation-note" style={{ padding: '0 15px 12px', margin: 0 }}>
             {image.quantitativeStatus === 'demonstration'
               ? `Bundled ${SYNTHETIC_DEMO_NAME} is procedurally generated synthetic data with no specimen or acquisition. Demonstration only; measurements are experimental and not validated.`

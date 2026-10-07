@@ -29,3 +29,11 @@ test('single and two channel sources do not invent measurements for missing chan
  const two={...image,channelCount:2,samples:new Uint16Array([0,0,1,1,2,2,3,3])};
  assert.deepEqual(analyzeChannels(two,settings,{},provenance).map(r=>r.analysis.signalChannel),['red','green']);
 });
+
+test('specific scope quantifies only that channel using its own saved thresholds',()=>{
+ const onlyGreen=analyzeChannels(image,settings,{...saved,'fluorescence:red':{minimum:-1,maximum:-1,brightness:1}},provenance,'green');
+ assert.equal(onlyGreen.length,1);assert.equal(onlyGreen[0].analysis.signalChannel,'green');assert.equal(onlyGreen[0].analysis.stain,'LTL (IF)');assert.equal(onlyGreen[0].metrics.positivePixels,2);
+ assert.equal(analyzeChannels(image,settings,saved,provenance,'blue')[0].metrics.positivePixels,3);
+ const two={...image,channelCount:2,samples:new Uint16Array([0,0,1,1,2,2,3,3])};
+ assert.throws(()=>analyzeChannels(two,settings,{},provenance,'blue'),/not available/);
+});

@@ -42,6 +42,7 @@ type OutsideMode = 'exclude' | 'report';
 type SignalChannel = 'red' | 'green' | 'blue' | 'grayscale';
 type DisplayChannel = 'composite' | 'red' | 'green' | 'blue';
 
+const ORIGINAL_PREVIEW_OPTIONS={stain:'Channel intensity (IF)',signalChannel:'red' as const,minThreshold:0,maxThreshold:255,removeBackground:false,backgroundTolerance:18,outsideMode:'exclude' as const,structure:'Whole tissue',rois:[]};
 const SYNTHETIC_DEMO_NAME = 'synthetic-demo-tile.jpg';
 const SIGNAL_CHANNELS: { value: SignalChannel; label: string }[] = [
   { value: 'red', label: 'Red' },
@@ -175,7 +176,11 @@ export default function Workbench({ userName }: { userName: string }) {
   const [analysisRecord, setAnalysisRecord] = useState<AnalysisRecord | null>(null);
   const [stain, setStain] = useState('Lotus lectin / LTL (IF)');
   const [conversionOverrides,setConversionOverrides]=useState<ConversionRange[]|undefined>();
-  const image=useMemo(()=>rawImage ? prepareMacroImage(rawImage,stain==='Sirius Red',conversionOverrides):null,[rawImage,stain,conversionOverrides]);
+  // Conversion depends on source pixels/ranges, never on a marker label or selected color.
+  const convertedImage=useMemo(()=>rawImage ? prepareMacroImage(rawImage,false,conversionOverrides):null,[rawImage,conversionOverrides]);
+  const siriusWorkflow=stain==='Sirius Red';
+  const image=useMemo(()=>convertedImage && siriusWorkflow ? {...convertedImage,analysisWorkflow:'sirius-magenta' as const}:convertedImage,[convertedImage,siriusWorkflow]);
+  const scoreStain=stain.includes('(IF)')?'Channel intensity (IF)':stain;
   const [studySample,setStudySample]=useState('');
   const [groupName,setGroupName]=useState('Wild type');
   const [groupReason,setGroupReason]=useState('');
@@ -219,8 +224,8 @@ export default function Workbench({ userName }: { userName: string }) {
   const previewImage = useMemo(() => image ? samplePreview(image) : null, [image]);
   const ranges = useMemo(() => previewImage ? displayRanges(previewImage) : [255, 255, 255], [previewImage]);
   const suggestions = useMemo(() => Object.fromEntries(SIGNAL_CHANNELS.map(({ value }) => [value,
-    previewImage ? automaticSettings(previewImage, stain, value) : { minimum: 0, maximum: 255, brightness: 1 },
-  ])) as Record<SignalChannel, ChannelSettings>, [previewImage, stain]);
+    previewImage ? automaticSettings(previewImage, scoreStain, value) : { minimum: 0, maximum: 255, brightness: 1 },
+  ])) as Record<SignalChannel, ChannelSettings>, [previewImage, scoreStain]);
 
   useEffect(() => {
     if (!previewImage) return;
@@ -233,16 +238,15 @@ export default function Workbench({ userName }: { userName: string }) {
     return () => cancelAnimationFrame(frame);
   }, [previewImage, stain, signalChannel, suggestions, channelSettings]);
 
+  const previewRois=useMemo(()=>rois.map(roi=>({
+    points:roi.points?.map(p=>({x:p.x*(previewImage?.width??1)/(image?.width??1),y:p.y*(previewImage?.height??1)/(image?.height??1)})),
+    x:roi.x*(previewImage?.width??1)/(image?.width??1),y:roi.y*(previewImage?.height??1)/(image?.height??1),
+    width:roi.width*(previewImage?.width??1)/(image?.width??1),height:roi.height*(previewImage?.height??1)/(image?.height??1),
+  })),[rois,previewImage,image]);
   const previewOptions = useMemo(() => ({
-    stain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
-    outsideMode, structure, rois: rois.map((roi) => ({
-      points:roi.points?.map(p=>({x:p.x*(previewImage?.width??1)/(image?.width??1),y:p.y*(previewImage?.height??1)/(image?.height??1)})),
-      x: roi.x * (previewImage?.width ?? 1) / (image?.width ?? 1),
-      y: roi.y * (previewImage?.height ?? 1) / (image?.height ?? 1),
-      width: roi.width * (previewImage?.width ?? 1) / (image?.width ?? 1),
-      height: roi.height * (previewImage?.height ?? 1) / (image?.height ?? 1),
-    })),
-  }), [stain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance, outsideMode, structure, rois, previewImage, image]);
+    stain:scoreStain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
+    outsideMode, structure, rois:previewRois,
+  }), [scoreStain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance, outsideMode, structure, previewRois]);
   const previewBrightness = useMemo(() => image?.channelCount === 1 || signalChannel === 'grayscale' ? [brightness, brightness, brightness]
     : (['red', 'green', 'blue'] as const).map((channel) => channel === signalChannel ? brightness : channelSettings[channelSettingsKey(stain, channel)]?.brightness ?? 1),
   [image, brightness, signalChannel, channelSettings, stain]);
@@ -251,6 +255,11 @@ export default function Workbench({ userName }: { userName: string }) {
     channelSettings[channelSettingsKey(stain, image?.channelCount === 1 ? 'grayscale' : channel)]?.displayMinimum ?? 0), [channelSettings, stain, image]);
   const previewDisplayMaximum = useMemo(() => (['red', 'green', 'blue'] as const).map((channel, index) =>
     channelSettings[channelSettingsKey(stain, image?.channelCount === 1 ? 'grayscale' : channel)]?.displayMaximum ?? ranges[index]), [channelSettings, stain, image, ranges]);
+
+  const compositeOptions=view==='original'?ORIGINAL_PREVIEW_OPTIONS:previewOptions;
+  const [displayRed,displayGreen,displayBlue]=previewDisplayMaximum;
+  const [displayLowRed,displayLowGreen,displayLowBlue]=previewDisplayMinimum;
+  const [brightnessRed,brightnessGreen,brightnessBlue]=previewBrightness;
 
   const initials = useMemo(
     () =>
@@ -442,11 +451,11 @@ export default function Workbench({ userName }: { userName: string }) {
     const baseCanvas = document.createElement('canvas');
     canvas.width = baseCanvas.width = previewImage.width;
     canvas.height = baseCanvas.height = previewImage.height;
-    const pixels = renderPreview(previewImage, 'composite', previewDisplayMaximum, previewBrightness, previewOptions, view, previewDisplayMinimum);
+    const pixels = renderPreview(previewImage, 'composite', [displayRed,displayGreen,displayBlue], [brightnessRed,brightnessGreen,brightnessBlue], compositeOptions, view, [displayLowRed,displayLowGreen,displayLowBlue]);
     baseCanvas.getContext('2d')?.putImageData(new ImageData(pixels, previewImage.width, previewImage.height), 0, 0);
     baseCanvasRef.current = baseCanvas;
     paintCanvas();
-  }, [previewImage, previewDisplayMinimum, previewDisplayMaximum, previewBrightness, previewOptions, view, paintCanvas]);
+  }, [previewImage, displayRed, displayGreen, displayBlue, displayLowRed, displayLowGreen, displayLowBlue, brightnessRed, brightnessGreen, brightnessBlue, compositeOptions, view, paintCanvas]);
 
   useEffect(() => {
     roisRef.current = rois;
@@ -640,6 +649,8 @@ export default function Workbench({ userName }: { userName: string }) {
   const chooseDisplayChannel = (channel: DisplayChannel) => {
     if (channel !== 'composite') {
       setSignalChannel(channel);
+      const values=channelSettings[channelSettingsKey(stain,channel)]??suggestions[channel];
+      setMinThreshold(values.minimum);setMaxThreshold(values.maximum);setBrightness(values.brightness);
       const assigned = stainingPanel.assignments.filter((item) => item.channel === channel && item.marker.trim());
       if (stain.includes('(IF)') && assigned.length === 1) {
         setStain(`${assigned[0].marker.trim()} (IF)`);

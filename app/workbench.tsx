@@ -22,7 +22,7 @@ import {
 import { prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
 
 import { prepareMacroImage, type ConversionRange } from './lib/macro-workflow';
-import { averageThresholds, type ReferenceTile, type StudyTile } from './lib/study';
+import { groupAverageThresholds, mergeStudyTiles, type ReferenceTile, type StudyTile } from './lib/study';
 import { captureChannels } from './lib/channel-capture';
 import { NumberField } from './channel-controls';
 import RoiEditor from './roi-editor';
@@ -34,6 +34,8 @@ import { samplePreview, channelSettingsKey, automaticSettings, displayRanges, re
 import { loadMicroscopyFile } from './lib/image-loader';
 import StainingPanelControls from './staining-panel';
 import { activeAssignment, type StainingPanel } from './lib/stain-channels';
+
+type SavedGroup = { id:string; name:string; stain:string; panel:StainingPanel; references:ReferenceTile[]; accepted:Record<string,ChannelSettings>|null; reason:string };
 
 type ViewMode = 'overlay' | 'original';
 type OutsideMode = 'exclude' | 'report';
@@ -175,6 +177,9 @@ export default function Workbench({ userName }: { userName: string }) {
   const [conversionOverrides,setConversionOverrides]=useState<ConversionRange[]|undefined>();
   const image=useMemo(()=>rawImage ? prepareMacroImage(rawImage,stain==='Sirius Red',conversionOverrides):null,[rawImage,stain,conversionOverrides]);
   const [studySample,setStudySample]=useState('');
+  const [groupName,setGroupName]=useState('Wild type');
+  const [groupReason,setGroupReason]=useState('');
+  const [savedGroups,setSavedGroups]=useState<SavedGroup[]>([]);
   const [references,setReferences]=useState<ReferenceTile[]>([]);
   const [accepted,setAccepted]=useState<Record<string,ChannelSettings>|null>(null);
   const referenceDefaultsRef=useRef<Record<string,ChannelSettings>|null>(null);
@@ -297,6 +302,7 @@ export default function Workbench({ userName }: { userName: string }) {
       const provenance = {
         analyst: userName,
         sampleId: studySample.trim() || sampleId.trim(),
+        groupName:groupName.trim()||'Ungrouped',
         sourceName,
         sourceSize,
         sourceLastModified,
@@ -316,7 +322,7 @@ export default function Workbench({ userName }: { userName: string }) {
             if (requestId !== analysisRequestId.current) return;
             setChannelRecords(records);
             if(acceptedRef.current) {
-              const entry:StudyTile={id:decoded.sourceSha256+sourceName,name:sourceName,records,screenshots:captureChannels(decoded,channelSettings,settings),displaySettings:structuredClone(channelSettings),reference:references.some(r=>r.id===decoded.sourceSha256+sourceName)};
+              const entry:StudyTile={id:JSON.stringify([groupName,studySample||sampleId,stain,structure,decoded.sourceSha256,sourceName]),name:sourceName,records,screenshots:captureChannels(decoded,channelSettings,settings),displaySettings:structuredClone(channelSettings),reference:references.some(r=>r.sampleId===(studySample||sampleId)&&r.sourceId===decoded.sourceSha256+sourceName)};
               setStudyTiles(current=>[...current.filter(tile=>tile.id!==entry.id),entry]);
             }
             setAnalysisRecord(records.find(record => record.analysis.signalChannel === signalChannel) ?? records[0]);
@@ -338,7 +344,7 @@ export default function Workbench({ userName }: { userName: string }) {
     },
     [
       image, stain, stainingPanel, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
-      outsideMode, structure, rois, userName, sampleId, sourceName, sourceSize, sourceLastModified, channelSettings, studySample, references,
+      outsideMode, structure, rois, userName, sampleId, sourceName, sourceSize, sourceLastModified, channelSettings, studySample, references, groupName,
     ],
   );
 
@@ -665,15 +671,37 @@ export default function Workbench({ userName }: { userName: string }) {
     if(!image || accepted) return;
     const settings=currentSettings();
     try {
-      const next=[...references.filter(r=>r.id!==image.sourceSha256+sourceName),{id:image.sourceSha256+sourceName,name:`${studySample || sampleId} / ${sourceName}`,settings,conversion:image.conversionRanges,rois:structuredClone(rois),regionCategory:structure}];
-      averageThresholds(next,profile==='sirius-magenta');referenceDefaultsRef.current=Object.fromEntries(Object.entries(settings).map(([key,v])=>[key,{minimum:v.minimum,maximum:v.maximum,brightness:1}]));setReferences(next);setMessage(`Saved reference ${next.length}: ${sourceName}`);
+      const sample=studySample.trim()||sampleId.trim(),id=JSON.stringify([sample,image.sourceSha256,sourceName]);
+      const next=[...references.filter(r=>r.id!==id),{id,sourceId:image.sourceSha256+sourceName,sampleId:sample,groupName:groupName.trim()||'Ungrouped',stain,name:`${sample} / ${sourceName}`,settings,conversion:image.conversionRanges,rois:structuredClone(rois),regionCategory:structure}];
+      groupAverageThresholds(next,profile==='sirius-magenta');referenceDefaultsRef.current=Object.fromEntries(Object.entries(settings).map(([key,v])=>[key,{minimum:v.minimum,maximum:v.maximum,brightness:1}]));setReferences(next);setMessage(`Saved reference ${next.length}: ${sourceName}`);
     } catch(cause) {setError(errorMessage(cause,'Reference could not be saved.'));}
   };
   const acceptThresholds = () => {
-    try {const next=averageThresholds(references,profile==='sirius-magenta');setAccepted(next);acceptedRef.current=next;setChannelSettings(next);setStudyTiles([]);invalidateAnalysis();setMessage('Shared thresholds accepted. Analyze each tile or run the folder.');}
+    try {const next=groupAverageThresholds(references,profile==='sirius-magenta');setAccepted(next);acceptedRef.current=next;setChannelSettings(next);setStudyTiles([]);invalidateAnalysis();setMessage('Shared thresholds accepted. Analyze each tile or run the folder.');}
     catch(cause){setError(errorMessage(cause,'Thresholds could not be accepted.'));}
   };
-  const finishSample=()=>{setProjectTiles(current=>[...current,...studyTiles]);setProjectReferences(current=>[...current,...references]);setStudySample('');setFolderFiles([]);resetStudy();};
+  const finishSample=()=>{
+    setProjectTiles(current=>mergeStudyTiles(current,studyTiles));setStudyTiles([]);
+    setStudySample('');setFolderFiles([]);setImage(null);setRois([]);invalidateAnalysis();
+    setMessage(accepted?'Next sample: open its folder. This group’s accepted thresholds remain locked.':'Open the next sample folder to add references to this group.');
+  };
+  const finishGroup=()=>{
+    const name=groupName.trim()||'Ungrouped';
+    const id=JSON.stringify([name,stain,stainingPanel.assignments.map(a=>[a.marker,a.channel,a.reagent])]);
+    const entry:SavedGroup={id,name,stain,panel:structuredClone(stainingPanel),references,accepted,reason:groupReason};
+    setSavedGroups(current=>[...current.filter(g=>g.id!==id),entry]);
+    setProjectReferences(current=>[...current.filter(r=>!(r.groupName===name&&r.stain===stain)),...references]);
+    finishSample();resetStudy();setGroupName('');setGroupReason('');
+    setMessage('Group saved. Name the next group or resume a saved group.');
+  };
+  const resumeGroup=(id:string)=>{
+    const group=savedGroups.find(g=>g.id===id);if(!group)return;
+    setGroupName(group.name);setStain(group.stain);setStainingPanel(structuredClone(group.panel));setGroupReason(group.reason);
+    setReferences(group.references);setAccepted(group.accepted);acceptedRef.current=group.accepted;
+    referenceDefaultsRef.current=group.accepted??group.references.at(-1)?.settings??null;
+    setChannelSettings(group.accepted??referenceDefaultsRef.current??{});setImage(null);setStudySample('');setFolderFiles([]);setRois([]);invalidateAnalysis();
+    setMessage('Group restored. Open a sample folder to continue with its shared thresholds.');
+  };
   const resetStudy=()=>{referenceDefaultsRef.current=null;setReferences([]);setAccepted(null);acceptedRef.current=null;setStudyTiles([]);invalidateAnalysis();};
   const analyzeFolder = async () => {
     if(!accepted || !folderFiles.length || structure!=='Whole tissue' || rois.length) return;
@@ -687,15 +715,15 @@ export default function Workbench({ userName }: { userName: string }) {
         await new Promise(resolve=>setTimeout(resolve,0));
         try {
           const raw=await loadMicroscopyFile(file,new AbortController().signal);
-          const reference=references.find(r=>r.id===raw.sourceSha256+name);
+          const reference=references.find(r=>r.sampleId===(studySample.trim()||sampleId)&&r.sourceId===raw.sourceSha256+name);
           const decoded=prepareMacroImage(raw,profile==='sirius-magenta',reference?.conversion as ConversionRange[]|undefined);
           const channel=profile==='sirius-magenta'?'red':decoded.channelCount===1?'grayscale':'red';
           const shared=accepted[channelSettingsKey(stain,channel)];
           const required=profile==='sirius-magenta'?['red']:decoded.channelCount===1?['grayscale']:decoded.channelCount===2?['red','green']:['red','green','blue'];
           if(!shared || required.some(c=>!accepted[channelSettingsKey(stain,c as SignalChannel)])) throw new Error('Channel set differs from reference tiles.');
           const settings:AnalysisSettingsSnapshot={stain,stainingPanel,signalChannel:channel,minThreshold:shared.minimum,maxThreshold:shared.maximum,structure,rois:[],removeBackground,backgroundTolerance,outsideMode};
-          const records=analyzeChannels(decoded,settings,accepted,{analyst:userName,sampleId:studySample.trim()||sampleId,sourceName:name,sourceSize:file.size,sourceLastModified:file.lastModified});
-          const entry:StudyTile={id:decoded.sourceSha256+name,name,records,screenshots:captureChannels(decoded,accepted,settings),displaySettings:structuredClone(accepted),reference:references.some(r=>r.id===decoded.sourceSha256+name)};
+          const records=analyzeChannels(decoded,settings,accepted,{analyst:userName,sampleId:studySample.trim()||sampleId,groupName:groupName.trim()||'Ungrouped',sourceName:name,sourceSize:file.size,sourceLastModified:file.lastModified});
+          const entry:StudyTile={id:JSON.stringify([groupName,studySample||sampleId,stain,structure,decoded.sourceSha256,name]),name,records,screenshots:captureChannels(decoded,accepted,settings),displaySettings:structuredClone(accepted),reference:!!reference};
           setStudyTiles(current=>[...current.filter(r=>r.id!==entry.id),entry]);
         } catch(cause) {failures.push(`${name}: ${errorMessage(cause,'Failed')}`);}
       }
@@ -733,9 +761,9 @@ export default function Workbench({ userName }: { userName: string }) {
     setExporting(true);
     try {
       const { channelWorkbook } = await import('./lib/workbook-export');
-      const collected=[...projectTiles,...studyTiles];
+      const collected=mergeStudyTiles(projectTiles,studyTiles);
       const exportedTiles=collected.length?collected:image?[{id:image.sourceSha256+sourceName,name:sourceName,records:snapshot,screenshots:captureChannels(image,currentSettings(),{...previewOptions,rois}),displaySettings:currentSettings(),reference:false}]:[];
-      const bytes = await channelWorkbook(snapshot, exportedTiles, [...projectReferences,...references], accepted);
+      const bytes = await channelWorkbook(snapshot, exportedTiles, [...new Map([...projectReferences,...references].map(r=>[JSON.stringify([r.groupName,r.stain,r.id]),r])).values()], accepted, [...savedGroups.filter(g=>!(accepted&&g.name===groupName&&g.stain===stain)),{name:groupName,stain,accepted,reason:groupReason}]);
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
       const link = document.createElement('a');
       link.href = url; link.download = `${safeExportName(snapshot[0].sampleId)}_staining_study.xlsx`;
@@ -774,26 +802,32 @@ export default function Workbench({ userName }: { userName: string }) {
           <input id="sample-id" className="text-input" value={sampleId} onChange={(event) => { setSampleId(event.target.value); invalidateAnalysis(); }} />
 
           <label className="field-label" htmlFor="stain">Staining</label>
-          <select id="stain" disabled={references.length>0||studyTiles.length>0} className="select-input" value={stain} onChange={(event) => chooseStain(event.target.value)}>{(STAIN_OPTIONS.includes(stain) ? STAIN_OPTIONS : [...STAIN_OPTIONS, stain]).map((option) => <option key={option}>{option}</option>)}</select>
+          <select id="stain" disabled={references.length>0||studyTiles.length>0||!!accepted} className="select-input" value={stain} onChange={(event) => chooseStain(event.target.value)}>{(STAIN_OPTIONS.includes(stain) ? STAIN_OPTIONS : [...STAIN_OPTIONS, stain]).map((option) => <option key={option}>{option}</option>)}</select>
 
           {stain.includes('(IF)') && <><label className="field-label" htmlFor="signal-channel">Positive signal channel</label><select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { setSignalChannel(event.target.value as SignalChannel); setStainingPanel((current) => ({ ...current, activeId: null })); invalidateAnalysis(); }}>{signalChannels.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></>}
 
-          <StainingPanelControls panel={stainingPanel} channelCount={image?.channelCount ?? 3} disabled={loading||references.length>0||studyTiles.length>0} onChange={changeStainingPanel} />
+          <StainingPanelControls panel={stainingPanel} channelCount={image?.channelCount ?? 3} disabled={loading||references.length>0||studyTiles.length>0||!!accepted} onChange={changeStainingPanel} />
 
           <section className="study-controls">
-            <h3>Sample folder workflow</h3>
-            <label className="field-label" htmlFor="study-sample">Sample name for workbook</label>
-            <input id="study-sample" className="text-input" value={studySample} disabled={references.length>0 || studyTiles.length>0} onChange={e=>setStudySample(e.target.value)} placeholder="e.g. K929" />
-            <p className="validation-note">Open one sample folder. Review approximately 10 reference tiles; save each chosen minimum with the same maximum. Then accept their average and quantify the full set.</p>
-            <button type="button" className="export-button" disabled={!image||loading||!!accepted} onClick={saveReference}>Save reference tile ({references.length})</button>
+            <h3>Groups and samples</h3>
+            <label className="field-label" htmlFor="group-name">Sample group</label>
+            <input id="group-name" className="text-input" list="group-suggestions" value={groupName} disabled={references.length>0||studyTiles.length>0||!!accepted} onChange={e=>setGroupName(e.target.value)} placeholder="e.g. Wild type" />
+            <datalist id="group-suggestions">{['Wild type','ApoJ liver KO','NTS','NTS ApoJ liver KO'].map(name=><option key={name} value={name} />)}</datalist>
+
+            {savedGroups.length>0 && <><label className="field-label" htmlFor="resume-group">Resume saved group</label><select id="resume-group" className="select-input" value="" disabled={references.length>0||studyTiles.length>0||!!accepted||loading} onChange={e=>resumeGroup(e.target.value)}><option value="">Choose group and staining…</option>{savedGroups.map(g=><option key={g.id} value={g.id}>{g.name} · {g.stain}</option>)}</select></>}
+            <label className="field-label" htmlFor="group-reason">Threshold selection notes</label><input id="group-reason" className="text-input" value={groupReason} onChange={e=>setGroupReason(e.target.value)} placeholder="Why these criteria / thresholds?" />
+            <label className="field-label" htmlFor="study-sample">Sample ID for workbook</label>
+            <input id="study-sample" className="text-input" value={studySample} disabled={references.some(r=>r.sampleId===(studySample||sampleId)) || studyTiles.length>0} onChange={e=>setStudySample(e.target.value)} placeholder="e.g. K929" />
+            <p className="validation-note">Open one sample folder at a time. Save reference tiles, then use Next sample to include other samples in the group. The group threshold averages each sample’s mean minimum equally; maxima stay fixed. Accept once, then use the same thresholds for every sample in this group.</p>
+            <button type="button" className="export-button" disabled={!image||loading||!!accepted||!groupName.trim()} onClick={saveReference}>Save reference tile ({references.length})</button>
             {references.length>0 && <details><summary>Review reference thresholds</summary>{references.map(r=><div key={r.id} className="reference-row"><strong>{r.name}</strong>{Object.entries(r.settings).map(([key,v])=><div key={key}>{key.split(':').pop()}: {v.minimum}–{v.maximum}</div>)}<button disabled={!!accepted} type="button" onClick={()=>setReferences(current=>current.filter(item=>item.id!==r.id))}>Remove</button></div>)}</details>}
-            {references.length>0 && <div className="validation-note">{Object.entries(averageThresholds(references,profile==='sirius-magenta')).map(([key,v])=><div key={key}>{key.split(':').pop()}: mean {v.average.toFixed(4)} → applied {v.minimum}; max {v.maximum}</div>)}</div>}
+            {references.length>0 && <div className="validation-note">{Object.entries(groupAverageThresholds(references,profile==='sirius-magenta')).map(([key,v])=><div key={key}>{key.split(':').pop()}: mean {v.average.toFixed(4)} → applied {v.minimum}; max {v.maximum}</div>)}</div>}
             <button type="button" className="export-button" disabled={!references.length||!!accepted||loading} onClick={acceptThresholds}>{accepted?'Shared thresholds locked':'Accept average thresholds'}</button>
             <button type="button" className="export-button" disabled={!accepted||!folderFiles.length||loading||structure!=='Whole tissue'||!!rois.length} onClick={analyzeFolder}>Quantify folder ({folderFiles.length} tiles)</button>
             <p className="validation-note">For glomeruli or manual tissue crops: outline each tile, then Analyze all channels to save it. Folder automation is for whole images only; outlines are never copied to another tile.</p>
-            <p className="validation-note">Results are kept in this browser session. Export before closing or refreshing the page.</p><p>{studyTiles.length} tiles saved for this sample · {projectTiles.length} tiles in completed samples</p><button type="button" className="export-button" disabled={!studyTiles.length||loading} onClick={finishSample}>Finish sample / start next</button>
-            <details><summary>Saved tiles</summary>{studyTiles.map(tile=><div className="reference-row" key={tile.id}>{tile.name}<button type="button" onClick={()=>setStudyTiles(current=>current.filter(t=>t.id!==tile.id))}>Remove result</button></div>)}</details>
-            <button type="button" className="stain-action" disabled={loading} onClick={resetStudy}>Start new threshold study / clear results</button>
+            <p className="validation-note">Results are kept in this browser session. Export before closing or refreshing the page.</p><p>{studyTiles.length} tiles saved for this sample · {projectTiles.length} tiles in completed samples</p><button type="button" className="export-button" disabled={(!studyTiles.length&&!references.length)||!image||loading} onClick={finishSample}>Next sample · keep group thresholds</button>
+            <button type="button" className="export-button" disabled={(!references.length&&!studyTiles.length)||loading} onClick={finishGroup}>Save group / switch group</button><details><summary>Saved tiles</summary>{studyTiles.map(tile=><div className="reference-row" key={tile.id}>{tile.name}<button type="button" onClick={()=>setStudyTiles(current=>current.filter(t=>t.id!==tile.id))}>Remove result</button></div>)}</details>
+            <button type="button" className="stain-action" disabled={loading} onClick={resetStudy}>Clear current group thresholds / unsaved results</button>
           </section>
           {image && rawImage?.samples && rawImage.analysisBitDepth!==8 && <details className="conversion-settings"><summary>8-bit conversion settings</summary><p className="validation-note">Conversion happens before appearance adjustments. Default: each source channel’s full-image minimum and maximum. Fiji’s importer may choose a different initial range; enter that range here for a controlled comparison. Changing it clears this threshold study. Source pixels are retained.</p>{image.conversionRanges?.map((range,i)=><div key={i}><strong>{['Red','Green','Blue'][i]}</strong>{(['minimum','maximum'] as const).map(field=><label key={field}>{field}<NumberField id={`conversion-${i}-${field}`} label={`Conversion channel ${i+1} ${field}`} value={range[field]} min={field==='maximum'?range.minimum:0} max={field==='minimum'?range.maximum:65535} onCommit={value=>{const next=image.conversionRanges!.map(r=>({...r}));next[i][field]=Math.max(field==='maximum'?range.minimum:0,Math.min(field==='minimum'?range.maximum:65535,Number(value)));resetStudy();setConversionOverrides(next);setChannelSettings({});}} /></label>)}</div>)}</details>}
 
@@ -838,7 +872,7 @@ export default function Workbench({ userName }: { userName: string }) {
         <section className="image-stage" aria-busy={loading}>
           <div className="stage-toolbar">
             <div className="file-chip" title={sourceName}><i /> {sourceName} <span>{formatBytes(sourceSize)}</span></div>
-            {folderFiles.length > 1 && <div className="folder-nav" aria-label="Folder image navigation"><button type="button" aria-label="Previous file" disabled={loading || folderIndex === 0} onClick={() => openFolderFile(folderIndex - 1)}>‹</button><span>{folderIndex + 1} / {folderFiles.length}</span><button type="button" aria-label="Next file" disabled={loading || folderIndex === folderFiles.length - 1} onClick={() => openFolderFile(folderIndex + 1)}>›</button></div>}
+            {folderFiles.length > 1 && <div className="folder-nav" aria-label="Folder image navigation"><button type="button" aria-label="Previous file" disabled={loading || folderIndex === 0} onClick={() => openFolderFile(folderIndex - 1)}>‹</button><label htmlFor="folder-image" className="sr-only">Image / tile ID</label><select id="folder-image" aria-label="Image / tile ID" disabled={loading} value={folderIndex} onChange={event=>openFolderFile(Number(event.target.value))}>{folderFiles.map((file,index)=><option key={index} value={index}>{index+1}. {file.webkitRelativePath||file.name}</option>)}</select><button type="button" aria-label="Next file" disabled={loading || folderIndex === folderFiles.length - 1} onClick={() => openFolderFile(folderIndex + 1)}>›</button></div>}
             <button type="button" className="replace-button" disabled={!image||loading} onClick={saveScreenshot}>Save 4-channel PNG</button><div className="view-tabs" aria-label="Image view"><button type="button" aria-pressed={view==='overlay'} onClick={()=>setView(view==='original'?'overlay':'original')}>{view==='overlay'?'Hide counted pixels':'Show counted pixels'}</button></div>
             <div className="open-actions"><button className="replace-button" type="button" onClick={() => fileInput.current?.click()}>Open file</button><button className="replace-button" type="button" onClick={() => folderInput.current?.click()}>Open folder</button></div>
             <input ref={fileInput} type="file" multiple accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" hidden onChange={onFileChange} />
@@ -885,7 +919,7 @@ export default function Workbench({ userName }: { userName: string }) {
           </p>}
         </section>
 
-        <ResultsPanel records={channelRecords} hasStudy={studyTiles.length+projectTiles.length>0} exporting={exporting} onExcel={exportExcel} onCsv={exportCsv} onJson={exportJson} />
+        <ResultsPanel tiles={mergeStudyTiles(projectTiles,studyTiles)} records={channelRecords} hasStudy={studyTiles.length+projectTiles.length>0} exporting={exporting} onExcel={exportExcel} onCsv={exportCsv} onJson={exportJson} />
       </section>
     </main>
   );

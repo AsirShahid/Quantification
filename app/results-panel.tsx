@@ -1,12 +1,15 @@
 'use client';
 import type { AnalysisRecord } from './lib/analysis-record';
+import {sampleSummaries,groupSummaries,type StudyTile} from './lib/study';
 
-export default function ResultsPanel({ records, hasStudy=false, exporting, onExcel, onCsv, onJson }: {
-  hasStudy?:boolean; records: AnalysisRecord[]; exporting: boolean; onExcel: () => void; onCsv: () => void; onJson: () => void;
+export default function ResultsPanel({ records, tiles=[], hasStudy=false, exporting, onExcel, onCsv, onJson }: {
+  tiles?:StudyTile[]; hasStudy?:boolean; records: AnalysisRecord[]; exporting: boolean; onExcel: () => void; onCsv: () => void; onJson: () => void;
 }) {
+  const groups=groupSummaries(sampleSummaries(tiles));
   return <aside className="results-panel" aria-label="Channel results">
     <div className="panel-title"><span>02</span><div><h2>Channel results</h2><p>{records.length ? `${records.length} finalized channel measurements` : 'Run Analyze all channels'}</p></div></div>
     <div className="results-scroll" tabIndex={0} aria-label="Scrollable channel measurements">
+      {groups.length>0 && <details open><summary>Collected groups and samples</summary><p className="validation-note">Excel includes every tile value for GraphPad, plus optional sample and group summaries. Group summaries give each sample equal weight.</p>{groups.map(group=><section className="group-summary" key={JSON.stringify([group.group,group.staining,group.channel,group.region])}><h3>{group.group} · {group.staining}</h3><p>{group.region} · {group.channel}</p><p>{group.n} samples · mean {group.mean?.toFixed(2)??'—'}% · SD {group.sd?.toFixed(2)??'—'} · SEM {group.sem?.toFixed(2)??'—'}</p>{group.samples.map(sample=><p key={sample.sample}>{sample.sample}: {sample.tileCount} tiles · mean {sample.mean?.toFixed(2)??'—'}%{sample.excludedTiles?` · ${sample.excludedTiles} empty regions excluded`:''}</p>)}{group.thresholds.length>1&&<p className="validation-note">Multiple thresholds in this group: {group.thresholds.join('; ')}. Review before comparison.</p>}</section>)}</details>}
       {!records.length && <p className="validation-note">Results appear here after analysis. Changing detection or region settings clears results until you analyze again.</p>}
       {records.map(record => <section className="channel-result" key={record.analysis.signalChannel} aria-label={`${record.analysis.signalChannel} results`}>
         <h3>{record.analysis.signalChannel.toUpperCase()} · {record.analysis.stain}</h3>

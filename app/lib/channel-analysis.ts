@@ -3,7 +3,7 @@ import { automaticSettings, channelSettingsKey, samplePreview, type ChannelSetti
 import { buildAnalysisRecord, type AnalysisSettingsSnapshot } from './analysis-record.ts';
 
 export function analyzeChannels(image: DecodedImage, settings: AnalysisSettingsSnapshot,
-  saved: Record<string, ChannelSettings>, provenance: { analyst: string; sampleId: string; sourceName: string; sourceSize: number; sourceLastModified: number },
+  saved: Record<string, ChannelSettings>, provenance: { analyst: string; sampleId: string; groupName?:string; sourceName: string; sourceSize: number; sourceLastModified: number },
 ) {
   const channels = image.analysisWorkflow === 'sirius-magenta' ? ['red'] as const : image.channelCount === 1 ? ['grayscale'] as const
     : image.channelCount === 2 ? ['red', 'green'] as const : ['red', 'green', 'blue'] as const;

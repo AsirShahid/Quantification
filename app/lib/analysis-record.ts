@@ -1,7 +1,7 @@
 import type { StainingPanel } from './stain-channels';
 import type { AnalysisResult, DecodedImage, RoiRect } from './image-analysis';
 
-export const ANALYSIS_SCHEMA_VERSION = '1.3.0-experimental';
+export const ANALYSIS_SCHEMA_VERSION = '1.4.0-experimental';
 
 export type AnalysisSettingsSnapshot = {
   stainingPanel?: StainingPanel;
@@ -20,6 +20,7 @@ type BuildAnalysisRecordInput = {
   analyzedAt: string;
   analyst: string;
   sampleId: string;
+  groupName?: string;
   sourceName: string;
   sourceSize: number;
   sourceLastModified: number;
@@ -92,6 +93,7 @@ export function buildAnalysisRecord(input: BuildAnalysisRecordInput) {
     analyzedAt: input.analyzedAt,
     analyst: input.analyst,
     sampleId: input.sampleId,
+    groupName: input.groupName ?? 'Ungrouped',
     source: {
       name: input.sourceName,
       sizeBytes: input.sourceSize,
@@ -179,6 +181,7 @@ export function analysisRecordToCsv(record: AnalysisRecord) {
     ['Analyzed_At', record.analyzedAt],
     ['Analyst', record.analyst],
     ['Sample_ID', record.sampleId],
+    ['Group', record.groupName],
     ['Source_File', record.source.name],
     ['Source_Size_Bytes', record.source.sizeBytes],
     ['Source_Last_Modified_Ms', record.source.lastModifiedMs],

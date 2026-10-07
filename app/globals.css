@@ -119,3 +119,7 @@ button,input,select { font:inherit; } button { cursor:pointer; } button:disabled
 .detection-inputs {border:0;padding:0;}
 .detection-inputs:disabled {opacity:.65;}
 .study-disabled {border:0;margin:0;padding:0;min-width:0;}
+
+.folder-nav select { max-width: min(320px, 35vw); min-width: 100px; padding: .45rem; border: 1px solid var(--line, #cdd5df); border-radius: 6px; font: inherit; }
+.group-summary { padding: 12px 0; border-bottom: 1px solid #dbe3ec; }
+.group-summary p { margin: .4rem 0; font-size: 14px; }

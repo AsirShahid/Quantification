@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ChangeEvent,
   type DragEvent,
   type PointerEvent,
@@ -21,6 +22,7 @@ import {
 } from './lib/analysis-record';
 import { prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
 
+import { imageSpecifications } from './lib/image-specifications';
 import { prepareMacroImage, type ConversionRange } from './lib/macro-workflow';
 import { groupAverageThresholds, mergeStudyTiles, type ReferenceTile, type StudyTile } from './lib/study';
 import { captureChannels } from './lib/channel-capture';
@@ -181,6 +183,7 @@ export default function Workbench({ userName }: { userName: string }) {
   const siriusWorkflow=stain==='Sirius Red';
   const image=useMemo(()=>convertedImage && siriusWorkflow ? {...convertedImage,analysisWorkflow:'sirius-magenta' as const}:convertedImage,[convertedImage,siriusWorkflow]);
   const scoreStain=stain.includes('(IF)')?'Channel intensity (IF)':stain;
+  const sourceSpecifications=image ? imageSpecifications(image):null;
   const [studySample,setStudySample]=useState('');
   const [groupName,setGroupName]=useState('Wild type');
   const [groupReason,setGroupReason]=useState('');
@@ -874,7 +877,6 @@ export default function Workbench({ userName }: { userName: string }) {
               <ChannelControls key={channel} channel={channel} limit={profile==='sirius-magenta' ? 1 : thresholdMax} locked={!!accepted || (profile==='sirius-magenta' && channel!=='red')}
                 settings={channel === signalChannel ? { ...channelSettings[channelSettingsKey(stain, channel)], minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[channelSettingsKey(stain, channel)] ?? suggestions[channel]}
                 active={signalChannel === channel} disabled={!image || loading || !availableSignalChannels(image).some((item) => item.value === channel)}
-                markerLabel={stainingPanel.assignments.filter((item) => item.channel === channel && item.marker.trim()).map((item) => item.marker).join(' + ')}
                 onSelect={() => { if (channel !== 'grayscale') chooseDisplayChannel(channel); }}
                 displayMaximum={ranges[channel === 'grayscale' ? 0 : { red: 0, green: 1, blue: 2 }[channel]]}
                 onDisplayChange={(next) => updateChannelSettings(channel, next, true)}
@@ -905,13 +907,12 @@ export default function Workbench({ userName }: { userName: string }) {
 
 
           <div className={`image-canvas ${draggingFile ? 'dragging' : ''} ${drawing ? 'drawing' : ''}`} onDragEnter={(event) => { event.preventDefault(); setDraggingFile(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDraggingFile(false)} onDrop={onDrop}>
-            {image && previewImage && <div className="channel-grid">
-              <div className="channel-tile"><div className="tile-title">{view === 'original' ? 'Composite' : 'Composite / detection'}</div><div className="channel-image"><canvas ref={canvasRef} aria-label="Microscopy image analysis preview" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} /></div></div>
+            {image && previewImage && <div className="channel-grid" style={{ '--image-ratio': previewImage.width / previewImage.height } as CSSProperties}>
+              <div className="channel-tile"><div className="channel-image"><canvas ref={canvasRef} aria-label="Microscopy image analysis preview" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} /></div></div>
               {(['red', 'green', 'blue'] as const).map((channel) => <ChannelTile key={channel} image={previewImage} channel={channel} ranges={ranges} options={previewOptions} view={view}
                 settings={channel === signalChannel ? { ...channelSettings[channelSettingsKey(stain, channel)], minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[channelSettingsKey(stain, channel)] ?? suggestions[channel]}
                 active={signalChannel === channel} onSelect={() => chooseDisplayChannel(channel)}
                 disabled={loading}
-                markerLabel={stainingPanel.assignments.filter((item) => item.channel === channel && item.marker.trim()).map((item) => item.marker).join(' + ')}
                 />)}
             </div>}
             {!image && <div className="empty-canvas"><strong>No image open</strong><span>Choose a TIFF, JP2, ND2 file, or folder.</span></div>}
@@ -922,10 +923,15 @@ export default function Workbench({ userName }: { userName: string }) {
           </div>
 
           <div className={`analysis-message ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'} aria-live={error ? 'assertive' : 'polite'}><i>{error ? '!' : loading ? '…' : analysisRecord ? '✓' : 'i'}</i><span>{error || message}</span></div>
-          <details className="image-details"><summary>Image details</summary><div className="stage-caption">
+          <details className="image-details"><summary title={sourceSpecifications?.summary}>Image details{sourceSpecifications && <span className="source-specifications"> · {sourceSpecifications.summary}</span>}</summary><div className="stage-caption">
             <span>{image ? `${image.width.toLocaleString()} × ${image.height.toLocaleString()} px` : '—'}</span>
             <span>{image ? `Source: ${image.sourceFormat}` : '—'}</span>
             <span>{image ? `Source bit depth: ${image.bitDepth}-bit` : '—'}</span>
+            <span>{sourceSpecifications?.physicalSize ?? 'Physical size: calibration unavailable'}</span>
+            <span>{sourceSpecifications ? `Decoded source plane, all channels: ${sourceSpecifications.decodedMiB.toFixed(1)} MiB` : '—'}</span>
+            <span>Uploaded file: {formatBytes(sourceSize)}</span>
+            <span>{image ? `Analysis copy: ${image.width} × ${image.height} px, 8-bit intensities${profile==='sirius-magenta'?' → 32-bit magenta score':''}` : '—'}</span>
+            <span>{previewImage ? `Screen preview: ${previewImage.width} × ${previewImage.height} px` : '—'}</span>
             <span>{image ? `Original shape: ${image.originalShape}` : '—'}</span>
             <span>{image ? `Original axes: ${image.originalAxes.join(', ')}` : '—'}</span>
             <span>{image ? `Selected shape: ${image.selectedShape}` : '—'}</span>

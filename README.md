@@ -13,6 +13,8 @@ KidneyQuant is a private, self-hostable kidney tissue stain-analysis workbench. 
 - Stain modes for alpha-SMA IF, vimentin IF, lotus lectin/LTL IF, Sirius Red, PAS, and H&E
 - Color-coded RGB channel views and exact numeric threshold entry: 0–255 for 8-bit samples, 0–65,535 for 16-bit samples
 - Background-worker image decoding with cancellable loading
+- Sidebar co-staining status and editable stain/channel assignments (including DAPI, ApoJ/Clusterin, and custom markers); selecting a marker switches its preview and fluorescence measurement channel
+- Antibody/fluorophore notes and stain/channel assignments preserved in CSV/JSON exports
 - Configurable fluorescence signal channel and positive-stain thresholds
 - Connected slide-background detection with exclusion or separate reporting
 - Analyst-defined rectangular ROI categories for glomeruli, podocytes, proximal tubules, all tubules, and interstitial tissue; these labels do not perform anatomical segmentation

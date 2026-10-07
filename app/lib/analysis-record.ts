@@ -1,8 +1,10 @@
+import type { StainingPanel } from './stain-channels';
 import type { AnalysisResult, DecodedImage, RoiRect } from './image-analysis';
 
-export const ANALYSIS_SCHEMA_VERSION = '1.1.0-experimental';
+export const ANALYSIS_SCHEMA_VERSION = '1.2.0-experimental';
 
 export type AnalysisSettingsSnapshot = {
+  stainingPanel?: StainingPanel;
   stain: string;
   signalChannel: 'red' | 'green' | 'blue' | 'grayscale';
   structure: string;
@@ -102,6 +104,11 @@ export function buildAnalysisRecord(input: BuildAnalysisRecordInput) {
       sha256: image.sourceSha256,
     },
     analysis: {
+      stainingPanel: {
+        coStained: settings.stainingPanel?.coStained ?? 'unspecified',
+        activeId: settings.stainingPanel?.activeId ?? null,
+        assignments: settings.stainingPanel?.assignments.map((assignment) => ({ ...assignment })) ?? [],
+      },
       stain: settings.stain,
       signalChannel: settings.signalChannel,
       structureCategory: settings.structure,
@@ -179,6 +186,9 @@ export function analysisRecordToCsv(record: AnalysisRecord) {
     ['Source_SHA256', record.source.sha256],
     ['Stain', record.analysis.stain],
     ['Signal_Channel', record.analysis.signalChannel],
+    ['Co_Stained', record.analysis.stainingPanel.coStained],
+    ['Active_Stain_ID', record.analysis.stainingPanel.activeId],
+    ['Stain_Channel_Assignments', JSON.stringify(record.analysis.stainingPanel.assignments)],
     ['Structure_Category', record.analysis.structureCategory],
     ['Min_Threshold', record.analysis.minThreshold],
     ['Max_Threshold', record.analysis.maxThreshold],

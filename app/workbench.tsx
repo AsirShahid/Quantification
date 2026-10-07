@@ -26,6 +26,8 @@ import {
 import { applyChannelViewInPlace, prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
 
 import { loadMicroscopyFile } from './lib/image-loader';
+import StainingPanelControls from './staining-panel';
+import { activeAssignment, type StainingPanel } from './lib/stain-channels';
 
 type ViewMode = 'overlay' | 'original' | 'mask';
 type OutsideMode = 'exclude' | 'report';
@@ -46,6 +48,8 @@ const STAIN_OPTIONS = [
   'alpha-SMA (IF)',
   'Vimentin (IF)',
   'Lotus lectin / LTL (IF)',
+  'DAPI (IF)',
+  'ApoJ / Clusterin (IF)',
   'PAS',
   'H&E — hematoxylin',
   'H&E — eosin',
@@ -75,6 +79,7 @@ const DEFAULT_CHANNELS: Record<string, SignalChannel> = {
   'alpha-SMA (IF)': 'red',
   'Vimentin (IF)': 'red',
   'Lotus lectin / LTL (IF)': 'green',
+  'DAPI (IF)': 'blue',
 };
 
 function stripExtension(name: string) {
@@ -191,6 +196,10 @@ export default function Workbench({ userName }: { userName: string }) {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [analysisRecord, setAnalysisRecord] = useState<AnalysisRecord | null>(null);
   const [stain, setStain] = useState('Sirius Red');
+  const [stainingPanel, setStainingPanel] = useState<StainingPanel>({
+    coStained: 'unspecified', activeId: null,
+    assignments: [{ id: 'primary', marker: '', channel: 'red', reagent: '' }],
+  });
   const [signalChannel, setSignalChannel] = useState<SignalChannel>('red');
   const [structure, setStructure] = useState('Whole tissue');
   const [minThreshold, setMinThreshold] = useState(6);
@@ -234,6 +243,10 @@ export default function Workbench({ userName }: { userName: string }) {
   const runAnalysis = useCallback(
     (decoded = image) => {
       if (!decoded) return;
+      if (stainingPanel.activeId && !activeAssignment(stainingPanel, decoded.channelCount)) {
+        setError('Choose a stain name and an available image channel before analysis.');
+        return;
+      }
       if (structure !== 'Whole tissue' && rois.length === 0) {
         setResult(null);
         setAnalysisRecord(null);
@@ -241,6 +254,7 @@ export default function Workbench({ userName }: { userName: string }) {
         return;
       }
       const settings: AnalysisSettingsSnapshot = {
+        stainingPanel,
         stain,
         signalChannel,
         minThreshold,
@@ -299,7 +313,7 @@ export default function Workbench({ userName }: { userName: string }) {
       });
     },
     [
-      image, stain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
+      image, stain, stainingPanel, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
       outsideMode, structure, rois, userName, sampleId, sourceName, sourceSize, sourceLastModified,
     ],
   );
@@ -316,6 +330,7 @@ export default function Workbench({ userName }: { userName: string }) {
     setAnalysisRecord(null);
     setImage(null);
     setDisplayChannel('composite');
+    setStainingPanel((current) => ({ ...current, activeId: null }));
     setSourceName(displayName);
     setSourceSize(file.size);
     setSourceLastModified(file.lastModified);
@@ -590,9 +605,23 @@ export default function Workbench({ userName }: { userName: string }) {
   const chooseStain = (value: string) => {
     const [minimum, maximum] = DEFAULT_THRESHOLDS[value] ?? [0, 255];
     setStain(value);
-    setSignalChannel(DEFAULT_CHANNELS[value] ?? 'red');
+    const requested = DEFAULT_CHANNELS[value] ?? 'red';
+    setSignalChannel(availableSignalChannels(image).some(({ value }) => value === requested) ? requested : image?.channelCount === 1 ? 'grayscale' : 'red');
+    setStainingPanel((current) => ({ ...current, activeId: null }));
     setMinThreshold(Math.round(minimum * thresholdMax / 255));
     setMaxThreshold(Math.round(maximum * thresholdMax / 255));
+    invalidateAnalysis();
+  };
+
+  const changeStainingPanel = (next: StainingPanel) => {
+    setStainingPanel(next);
+    const selected = activeAssignment(next, image?.channelCount ?? 3);
+    if (selected) {
+      setStain(`${selected.marker.trim()} (IF)`);
+      setSignalChannel(selected.channel);
+      setDisplayChannel(selected.channel === 'grayscale' ? 'composite' : selected.channel);
+      setView('original');
+    }
     invalidateAnalysis();
   };
 
@@ -660,9 +689,11 @@ export default function Workbench({ userName }: { userName: string }) {
           <input id="sample-id" className="text-input" value={sampleId} onChange={(event) => { setSampleId(event.target.value); invalidateAnalysis(); }} />
 
           <label className="field-label" htmlFor="stain">Staining</label>
-          <select id="stain" className="select-input" value={stain} onChange={(event) => chooseStain(event.target.value)}>{STAIN_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
+          <select id="stain" className="select-input" value={stain} onChange={(event) => chooseStain(event.target.value)}>{(STAIN_OPTIONS.includes(stain) ? STAIN_OPTIONS : [...STAIN_OPTIONS, stain]).map((option) => <option key={option}>{option}</option>)}</select>
 
-          {stain.includes('(IF)') && <><label className="field-label" htmlFor="signal-channel">Positive signal channel</label><select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { setSignalChannel(event.target.value as SignalChannel); invalidateAnalysis(); }}>{signalChannels.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></>}
+          {stain.includes('(IF)') && <><label className="field-label" htmlFor="signal-channel">Positive signal channel</label><select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { setSignalChannel(event.target.value as SignalChannel); setStainingPanel((current) => ({ ...current, activeId: null })); invalidateAnalysis(); }}>{signalChannels.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></>}
+
+          <StainingPanelControls panel={stainingPanel} channelCount={image?.channelCount ?? 3} disabled={loading} onChange={changeStainingPanel} />
 
           <label className="field-label" htmlFor="roi-category">ROI category</label>
           <select id="roi-category" className="select-input" value={structure} onChange={(event) => chooseStructure(event.target.value)}>{STRUCTURE_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>

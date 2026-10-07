@@ -3,6 +3,11 @@ import { analyzeImage, stainScore, thresholdMaximum, type AnalysisOptions, type 
 export type Channel = AnalysisOptions['signalChannel'];
 export type ChannelSettings = { minimum: number; maximum: number; brightness: number };
 
+// Fluorescent marker names share intensity units; keep each color's edits across marker selection.
+export function channelSettingsKey(stain: string, channel: Channel) {
+  return `${stain.includes('(IF)') ? 'fluorescence' : stain}:${channel}`;
+}
+
 export function samplePreview(image: DecodedImage, maxSide = 480): DecodedImage {
   const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
   const width = Math.max(1, Math.round(image.width * scale));

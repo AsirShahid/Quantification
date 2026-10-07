@@ -59,3 +59,26 @@ button,input,select { font:inherit; } button { cursor:pointer; } button:disabled
   .channel-tile small { font-size:9px; padding:4px 6px; }
   .image-stage>.validation-note { display:none; }
 }
+
+.sr-only { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+.channel-image-select { display:flex; align-items:center; justify-content:center; width:100%; height:100%; min-height:0; padding:0; border:0; background:transparent; cursor:pointer; }
+.channel-image-select:focus-visible { outline:2px solid #8cd5ad; outline-offset:-2px; }
+
+.channel-settings-group { margin:20px 0; }
+.channel-settings-group h3 { font-size:14px; margin:0 0 10px; }
+.channel-settings-card { min-width:0; border:1px solid #d8e2db; border-radius:10px; padding:10px; margin:10px 0; background:#fafcfb; }
+.channel-settings-card.active { border-color:#287651; box-shadow:0 0 0 1px #287651; }
+.channel-settings-card:disabled { opacity:.45; }
+.channel-settings-title { padding:0; border:0; background:transparent; color:#223f2c; font-size:12px; font-weight:800; cursor:pointer; }
+.channel-settings-title[data-channel="red"] { color:#a03242; }
+.channel-settings-title[data-channel="blue"] { color:#295fa5; }
+.channel-marker { display:block; font-size:10px; color:#526358; margin:5px 0; overflow-wrap:anywhere; }
+.channel-threshold-pair { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:9px; }
+.channel-settings-card label { font-size:10px; color:#40584a; }
+.channel-threshold-pair input[type="number"] { width:100%; min-width:0; height:32px; margin-top:4px; border:1px solid #ccd8d0; border-radius:5px; padding:4px 6px; background:white; }
+.channel-settings-card input[type="range"] { width:100%; height:18px; margin:4px 0; accent-color:#287651; }
+.channel-brightness-label { display:block; margin-top:8px; }
+.channel-brightness-label span { float:right; }
+.channel-settings-footer { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.channel-settings-footer span { font-size:9px; color:#526358; }
+.channel-settings-footer button { padding:4px 8px; border:1px solid #ccd8d0; border-radius:5px; background:white; color:#27513a; font-size:10px; cursor:pointer; }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { samplePreview, automaticSettings, displayRanges, renderPreview } from './channel-preview.ts';
+import { samplePreview, channelSettingsKey, automaticSettings, displayRanges, renderPreview } from './channel-preview.ts';
 import { analyzeImage, type DecodedImage, type AnalysisOptions } from './image-analysis.ts';
 
 const image: DecodedImage = {
@@ -50,4 +50,11 @@ test('downsampled previews preserve exact native samples and uniform black has n
   const auto = automaticSettings(black, options.stain, 'red');
   assert.equal(auto.minimum, 1);
   assert.equal(analyzeImage(black, { ...options, minThreshold: auto.minimum }).positivePixels, 0);
+});
+
+
+test('fluorescence channel settings persist across marker names without sharing colors or brightfield transforms', () => {
+  assert.equal(channelSettingsKey('DAPI (IF)', 'blue'), channelSettingsKey('ApoJ / Clusterin (IF)', 'blue'));
+  assert.notEqual(channelSettingsKey('DAPI (IF)', 'red'), channelSettingsKey('DAPI (IF)', 'blue'));
+  assert.notEqual(channelSettingsKey('PAS', 'red'), channelSettingsKey('DAPI (IF)', 'red'));
 });

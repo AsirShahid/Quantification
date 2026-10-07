@@ -25,7 +25,8 @@ import {
 import { prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
 
 import ChannelTile from './channel-tile';
-import { samplePreview, automaticSettings, displayRanges, renderPreview, type ChannelSettings } from './lib/channel-preview';
+import ChannelControls from './channel-controls';
+import { samplePreview, channelSettingsKey, automaticSettings, displayRanges, renderPreview, type ChannelSettings } from './lib/channel-preview';
 import { loadMicroscopyFile } from './lib/image-loader';
 import StainingPanelControls from './staining-panel';
 import { activeAssignment, type StainingPanel } from './lib/stain-channels';
@@ -221,7 +222,7 @@ export default function Workbench({ userName }: { userName: string }) {
   useEffect(() => {
     if (!previewImage) return;
     const frame = requestAnimationFrame(() => {
-      const next = channelSettings[`${stain}:${signalChannel}`] ?? suggestions[signalChannel];
+      const next = channelSettings[channelSettingsKey(stain, signalChannel)] ?? suggestions[signalChannel];
       setMinThreshold(next.minimum);
       setMaxThreshold(next.maximum);
       setBrightness(next.brightness);
@@ -239,7 +240,7 @@ export default function Workbench({ userName }: { userName: string }) {
     })),
   }), [stain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance, outsideMode, structure, rois, previewImage, image]);
   const previewBrightness = useMemo(() => image?.channelCount === 1 || signalChannel === 'grayscale' ? [brightness, brightness, brightness]
-    : (['red', 'green', 'blue'] as const).map((channel) => channel === signalChannel ? brightness : channelSettings[`${stain}:${channel}`]?.brightness ?? 1),
+    : (['red', 'green', 'blue'] as const).map((channel) => channel === signalChannel ? brightness : channelSettings[channelSettingsKey(stain, channel)]?.brightness ?? 1),
   [image, brightness, signalChannel, channelSettings, stain]);
 
   const initials = useMemo(
@@ -618,24 +619,24 @@ export default function Workbench({ userName }: { userName: string }) {
   const chooseDisplayChannel = (channel: DisplayChannel) => {
     if (channel !== 'composite') {
       setSignalChannel(channel);
-      setStainingPanel((current) => ({ ...current, activeId: null }));
+      const assigned = stainingPanel.assignments.filter((item) => item.channel === channel && item.marker.trim());
+      if (stain.includes('(IF)') && assigned.length === 1) {
+        setStain(`${assigned[0].marker.trim()} (IF)`);
+        setStainingPanel((current) => ({ ...current, activeId: assigned[0].id }));
+      } else {
+        if (stain.includes('(IF)') && channel !== signalChannel) setStain('Channel intensity (IF)');
+        setStainingPanel((current) => ({ ...current, activeId: null }));
+      }
       invalidateAnalysis();
     }
   };
 
-  const updateThreshold = (minimum: number, maximum: number) => {
-    setMinThreshold(minimum);
-    setMaxThreshold(maximum);
-    setChannelSettings((current) => ({ ...current, [`${stain}:${signalChannel}`]: { minimum, maximum, brightness } }));
+  const updateChannelSettings = (channel: SignalChannel, next: ChannelSettings) => {
+    setChannelSettings((current) => ({ ...current, [channelSettingsKey(stain, channel)]: next }));
+    if (channel !== 'grayscale') chooseDisplayChannel(channel);
+    else { setSignalChannel(channel); invalidateAnalysis(); }
+    setMinThreshold(next.minimum); setMaxThreshold(next.maximum); setBrightness(next.brightness);
     setView('overlay');
-    invalidateAnalysis();
-  };
-
-  const resetAutomatic = () => {
-    const next = suggestions[signalChannel];
-    setChannelSettings((current) => ({ ...current, [`${stain}:${signalChannel}`]: next }));
-    setMinThreshold(next.minimum); setMaxThreshold(next.maximum); setBrightness(1);
-    setView('overlay'); invalidateAnalysis();
   };
 
   const toggleDrawing = () => {
@@ -728,22 +729,18 @@ export default function Workbench({ userName }: { userName: string }) {
 
           {removeBackground && <><label className="field-label compact" htmlFor="outside-mode">Outside-tissue handling</label><select id="outside-mode" className="select-input" value={outsideMode} onChange={(event) => { setOutsideMode(event.target.value as OutsideMode); invalidateAnalysis(); }}><option value="exclude">Exclude from calculations</option><option value="report">Exclude and report separately</option></select><label className="field-label compact" htmlFor="background-tolerance">Background tolerance <span>{backgroundTolerance}</span></label><input id="background-tolerance" className="single-range" type="range" min="4" max="60" value={backgroundTolerance} onChange={(event) => { setBackgroundTolerance(Number(event.target.value)); invalidateAnalysis(); }} /></>}
 
-          <label className="field-label" htmlFor="channel-brightness">{signalChannel} display brightness <span>{brightness.toFixed(1)}×</span></label>
-          <input id="channel-brightness" type="range" className="single-range" min="0.2" max="3" step="0.1" disabled={loading} value={brightness} onChange={(event) => {
-            const value = Number(event.target.value); setBrightness(value);
-            setChannelSettings((current) => ({ ...current, [`${stain}:${signalChannel}`]: { minimum: minThreshold, maximum: maxThreshold, brightness: value } }));
-          }} />
-          <button type="button" className="stain-action" disabled={!image || loading} onClick={resetAutomatic}>Auto brightness &amp; threshold</button>
-          <p className="validation-note">Each channel starts with automatic brightness and an Otsu threshold suggestion from the preview. Manual settings are remembered per stain/channel until another image is opened. Brightness affects display only.</p>
-          <div className="threshold-card">
-            <div className="threshold-title"><strong>Positive stain threshold</strong><span>{thresholdMax === 65535 ? '16-bit' : '8-bit'}</span></div>
-            <label htmlFor="minimum-threshold-value">Minimum</label>
-            <input disabled={loading} id="minimum-threshold-value" className="text-input" type="number" min="0" max={maxThreshold} step="1" value={minThreshold} onChange={(event) => { updateThreshold(Math.max(0, Math.min(Math.round(Number(event.target.value)), maxThreshold)), maxThreshold); }} />
-            <input disabled={loading} id="minimum-threshold" aria-label="Minimum threshold slider" className="single-range berry" type="range" min="0" max={thresholdMax} step="1" value={minThreshold} onChange={(event) => { updateThreshold(Math.min(Number(event.target.value), maxThreshold), maxThreshold); }} />
-            <label htmlFor="maximum-threshold-value">Maximum</label>
-            <input disabled={loading} id="maximum-threshold-value" className="text-input" type="number" min={minThreshold} max={thresholdMax} step="1" value={maxThreshold} onChange={(event) => { updateThreshold(minThreshold, Math.min(thresholdMax, Math.max(Math.round(Number(event.target.value)), minThreshold))); }} />
-            <input disabled={loading} id="maximum-threshold" aria-label="Maximum threshold slider" className="single-range berry" type="range" min="0" max={thresholdMax} step="1" value={maxThreshold} onChange={(event) => { updateThreshold(minThreshold, Math.max(Number(event.target.value), minThreshold)); }} />
-            <p className="validation-note">Range: 0–{formatInteger(thresholdMax)}. Both limits are inclusive.</p>
+          <div className="channel-settings-group">
+            <h3>Channel brightness &amp; thresholds</h3>
+            <p className="validation-note">Edit each channel here. Click an image or a channel heading to choose the composite overlay and measurement channel. Brightness affects display only.</p>
+            {(image?.channelCount === 1 ? ['grayscale'] as const : ['red', 'green', 'blue'] as const).map((channel) =>
+              <ChannelControls key={channel} channel={channel} limit={thresholdMax}
+                settings={channel === signalChannel ? { minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[channelSettingsKey(stain, channel)] ?? suggestions[channel]}
+                active={signalChannel === channel} disabled={!image || loading || !availableSignalChannels(image).some((item) => item.value === channel)}
+                markerLabel={stainingPanel.assignments.filter((item) => item.channel === channel && item.marker.trim()).map((item) => item.marker).join(' + ')}
+                onSelect={() => { if (channel !== 'grayscale') chooseDisplayChannel(channel); }}
+                onChange={(next) => updateChannelSettings(channel, next)}
+                onAuto={() => updateChannelSettings(channel, suggestions[channel])} />)}
+            <p className="validation-note">Auto uses channel-specific brightness and an Otsu starting threshold from the preview. Manual fluorescence settings remain saved per color until another image is opened.</p>
           </div>
           <p className="validation-note">{thresholdMax === 65535
             ? stain.includes('(IF)')
@@ -771,8 +768,11 @@ export default function Workbench({ userName }: { userName: string }) {
             {image && previewImage && <div className="channel-grid">
               <div className="channel-tile"><div className="tile-title">Composite / overlay</div><div className="channel-image"><canvas ref={canvasRef} aria-label="Microscopy image analysis preview" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} /></div><small>{view === 'original' ? 'Composite image' : `Live ${signalChannel} threshold ${view}`}</small></div>
               {(['red', 'green', 'blue'] as const).map((channel) => <ChannelTile key={channel} image={previewImage} channel={channel} ranges={ranges} options={previewOptions} view={view === 'mask' ? 'mask' : 'original'}
-                settings={channel === signalChannel ? { minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[`${stain}:${channel}`] ?? suggestions[channel]}
-                active={signalChannel === channel} onSelect={() => chooseDisplayChannel(channel)} />)}
+                settings={channel === signalChannel ? { minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[channelSettingsKey(stain, channel)] ?? suggestions[channel]}
+                active={signalChannel === channel} onSelect={() => chooseDisplayChannel(channel)}
+                disabled={loading}
+                markerLabel={stainingPanel.assignments.filter((item) => item.channel === channel && item.marker.trim()).map((item) => item.marker).join(' + ')}
+                />)}
             </div>}
             {!image && <div className="empty-canvas"><strong>No image open</strong><span>Choose a TIFF, JP2, ND2 file, or folder.</span></div>}
             {(draggingFile || !image) && <button type="button" className="central-dropzone" disabled={loading} onClick={() => fileInput.current?.click()}><strong>Drop ND2, TIFF, or JP2</strong><span>or choose a file</span></button>}

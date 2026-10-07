@@ -30,6 +30,28 @@ npm run dev
 
 Then open `http://localhost:3000`. Browser-local TIFF analysis works without the companion; JP2-family and ND2 input require the self-hosted stack.
 
+## Local ND2/JP2 decoder (macOS/Linux)
+
+From the repository root (the folder containing `package.json`), create `.dev.vars` with:
+
+```dotenv
+ANALYSIS_SERVICE_URL=http://127.0.0.1:8000
+```
+
+The Cloudflare development runtime reads `.dev.vars`. Keep it local; it is ignored by Git. Restart `npm run dev` after changing it.
+
+In a second terminal, also at the repository root:
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r analysis-service/requirements.txt
+.venv/bin/python -m uvicorn main:app --app-dir analysis-service --host 127.0.0.1 --port 8000
+```
+
+Keep both servers running. `http://127.0.0.1:8000/health` should return `{"status":"ok"}`. Upload through the website at `http://localhost:3000`; the decoder has no homepage.
+
+A `/api/decode` 501 means the service URL is missing. A 502 means the proxy request failed; inspect the website terminal for the underlying exception. The proxy uses manual redirect handling because the Cloudflare runtime rejects `redirect: 'error'`, and it refuses companion redirects rather than forwarding uploaded data to another address.
+
 ## Self-host the private stack
 
 The production request path is:

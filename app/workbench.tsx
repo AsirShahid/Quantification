@@ -203,7 +203,7 @@ export default function Workbench({ userName }: { userName: string }) {
   const [backgroundTolerance, setBackgroundTolerance] = useState(18);
   const [rois, setRois] = useState<RoiRect[]>([]);
   const [drawing, setDrawing] = useState(false);
-  const [view, setView] = useState<ViewMode>('overlay');
+  const [view, setView] = useState<ViewMode>('original');
   const [loading, setLoading] = useState(true);
   const [draggingFile, setDraggingFile] = useState(false);
   const [folderFiles, setFolderFiles] = useState<File[]>([]);
@@ -242,6 +242,11 @@ export default function Workbench({ userName }: { userName: string }) {
   const previewBrightness = useMemo(() => image?.channelCount === 1 || signalChannel === 'grayscale' ? [brightness, brightness, brightness]
     : (['red', 'green', 'blue'] as const).map((channel) => channel === signalChannel ? brightness : channelSettings[channelSettingsKey(stain, channel)]?.brightness ?? 1),
   [image, brightness, signalChannel, channelSettings, stain]);
+
+  const previewDisplayMinimum = useMemo(() => (['red', 'green', 'blue'] as const).map(channel =>
+    channelSettings[channelSettingsKey(stain, image?.channelCount === 1 ? 'grayscale' : channel)]?.displayMinimum ?? 0), [channelSettings, stain, image]);
+  const previewDisplayMaximum = useMemo(() => (['red', 'green', 'blue'] as const).map((channel, index) =>
+    channelSettings[channelSettingsKey(stain, image?.channelCount === 1 ? 'grayscale' : channel)]?.displayMaximum ?? ranges[index]), [channelSettings, stain, image, ranges]);
 
   const initials = useMemo(
     () =>
@@ -348,6 +353,7 @@ export default function Workbench({ userName }: { userName: string }) {
     setAnalysisRecord(null);
     setImage(null);
     setChannelSettings({});
+    setView('original');
     setStainingPanel((current) => ({ ...current, activeId: null }));
     setSourceName(displayName);
     setSourceSize(file.size);
@@ -428,11 +434,11 @@ export default function Workbench({ userName }: { userName: string }) {
     const baseCanvas = document.createElement('canvas');
     canvas.width = baseCanvas.width = previewImage.width;
     canvas.height = baseCanvas.height = previewImage.height;
-    const pixels = renderPreview(previewImage, 'composite', ranges, previewBrightness, previewOptions, view);
+    const pixels = renderPreview(previewImage, 'composite', previewDisplayMaximum, previewBrightness, previewOptions, view, previewDisplayMinimum);
     baseCanvas.getContext('2d')?.putImageData(new ImageData(pixels, previewImage.width, previewImage.height), 0, 0);
     baseCanvasRef.current = baseCanvas;
     paintCanvas();
-  }, [previewImage, ranges, previewBrightness, previewOptions, view, paintCanvas]);
+  }, [previewImage, previewDisplayMinimum, previewDisplayMaximum, previewBrightness, previewOptions, view, paintCanvas]);
 
   useEffect(() => {
     roisRef.current = rois;
@@ -603,7 +609,6 @@ export default function Workbench({ userName }: { userName: string }) {
     if (selected) {
       setStain(`${selected.marker.trim()} (IF)`);
       setSignalChannel(selected.channel);
-      setView('overlay');
     }
     invalidateAnalysis();
   };
@@ -631,8 +636,12 @@ export default function Workbench({ userName }: { userName: string }) {
     }
   };
 
-  const updateChannelSettings = (channel: SignalChannel, next: ChannelSettings) => {
+  const updateChannelSettings = (channel: SignalChannel, next: ChannelSettings, displayOnly = false) => {
     setChannelSettings((current) => ({ ...current, [channelSettingsKey(stain, channel)]: next }));
+    if (displayOnly) {
+      if (channel === signalChannel) setBrightness(next.brightness);
+      return;
+    }
     if (channel !== 'grayscale') chooseDisplayChannel(channel);
     else { setSignalChannel(channel); invalidateAnalysis(); }
     setMinThreshold(next.minimum); setMaxThreshold(next.maximum); setBrightness(next.brightness);
@@ -734,13 +743,15 @@ export default function Workbench({ userName }: { userName: string }) {
             <p className="validation-note">Edit each channel here. Click an image or a channel heading to choose the composite overlay and measurement channel. Brightness affects display only.</p>
             {(image?.channelCount === 1 ? ['grayscale'] as const : ['red', 'green', 'blue'] as const).map((channel) =>
               <ChannelControls key={channel} channel={channel} limit={thresholdMax}
-                settings={channel === signalChannel ? { minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[channelSettingsKey(stain, channel)] ?? suggestions[channel]}
+                settings={channel === signalChannel ? { ...channelSettings[channelSettingsKey(stain, channel)], minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[channelSettingsKey(stain, channel)] ?? suggestions[channel]}
                 active={signalChannel === channel} disabled={!image || loading || !availableSignalChannels(image).some((item) => item.value === channel)}
                 markerLabel={stainingPanel.assignments.filter((item) => item.channel === channel && item.marker.trim()).map((item) => item.marker).join(' + ')}
                 onSelect={() => { if (channel !== 'grayscale') chooseDisplayChannel(channel); }}
+                displayMaximum={ranges[channel === 'grayscale' ? 0 : { red: 0, green: 1, blue: 2 }[channel]]}
+                onDisplayChange={(next) => updateChannelSettings(channel, next, true)}
                 onChange={(next) => updateChannelSettings(channel, next)}
                 onAuto={() => updateChannelSettings(channel, suggestions[channel])} />)}
-            <p className="validation-note">Auto uses channel-specific brightness and an Otsu starting threshold from the preview. Manual fluorescence settings remain saved per color until another image is opened.</p>
+            <p className="validation-note">Display min/max control contrast without changing measurements. Detection thresholds select pixels to count; press Enter or leave a number field to apply. Auto resets display and uses an Otsu starting threshold. Manual fluorescence settings remain saved per color until another image is opened.</p>
           </div>
           <p className="validation-note">{thresholdMax === 65535
             ? stain.includes('(IF)')
@@ -756,7 +767,7 @@ export default function Workbench({ userName }: { userName: string }) {
           <div className="stage-toolbar">
             <div className="file-chip" title={sourceName}><i /> {sourceName} <span>{formatBytes(sourceSize)}</span></div>
             {folderFiles.length > 1 && <div className="folder-nav" aria-label="Folder image navigation"><button type="button" aria-label="Previous file" disabled={loading || folderIndex === 0} onClick={() => openFolderFile(folderIndex - 1)}>‹</button><span>{folderIndex + 1} / {folderFiles.length}</span><button type="button" aria-label="Next file" disabled={loading || folderIndex === folderFiles.length - 1} onClick={() => openFolderFile(folderIndex + 1)}>›</button></div>}
-            <div className="view-tabs" aria-label="Image view">{(['overlay', 'original', 'mask'] as ViewMode[]).map((option) => <button key={option} type="button" aria-pressed={view === option} className={view === option ? 'active' : ''} onClick={() => setView(option)}>{option}</button>)}</div>
+            <div className="view-tabs" aria-label="Image view">{(['overlay', 'original', 'mask'] as ViewMode[]).map((option) => <button key={option} type="button" aria-pressed={view === option} className={view === option ? 'active' : ''} onClick={() => setView(option)}>{option === 'original' ? 'image' : option === 'overlay' ? 'detection overlay' : 'mask'}</button>)}</div>
             <div className="open-actions"><button className="replace-button" type="button" onClick={() => fileInput.current?.click()}>Open file</button><button className="replace-button" type="button" onClick={() => folderInput.current?.click()}>Open folder</button></div>
             <input ref={fileInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" hidden onChange={onFileChange} />
             <input ref={folderInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" multiple hidden onChange={onFolderChange} {...{ webkitdirectory: '', directory: '' }} />
@@ -766,9 +777,9 @@ export default function Workbench({ userName }: { userName: string }) {
 
           <div className={`image-canvas ${draggingFile ? 'dragging' : ''} ${drawing ? 'drawing' : ''}`} onDragEnter={(event) => { event.preventDefault(); setDraggingFile(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDraggingFile(false)} onDrop={onDrop}>
             {image && previewImage && <div className="channel-grid">
-              <div className="channel-tile"><div className="tile-title">Composite / overlay</div><div className="channel-image"><canvas ref={canvasRef} aria-label="Microscopy image analysis preview" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} /></div><small>{view === 'original' ? 'Composite image' : `Live ${signalChannel} threshold ${view}`}</small></div>
-              {(['red', 'green', 'blue'] as const).map((channel) => <ChannelTile key={channel} image={previewImage} channel={channel} ranges={ranges} options={previewOptions} view={view === 'mask' ? 'mask' : 'original'}
-                settings={channel === signalChannel ? { minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[channelSettingsKey(stain, channel)] ?? suggestions[channel]}
+              <div className="channel-tile"><div className="tile-title">{view === 'original' ? 'Composite' : 'Composite / detection'}</div><div className="channel-image"><canvas ref={canvasRef} aria-label="Microscopy image analysis preview" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerCancel} /></div><small>{view === 'original' ? 'Composite image' : `Live ${signalChannel} threshold ${view}`}</small></div>
+              {(['red', 'green', 'blue'] as const).map((channel) => <ChannelTile key={channel} image={previewImage} channel={channel} ranges={ranges} options={previewOptions} view={view}
+                settings={channel === signalChannel ? { ...channelSettings[channelSettingsKey(stain, channel)], minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[channelSettingsKey(stain, channel)] ?? suggestions[channel]}
                 active={signalChannel === channel} onSelect={() => chooseDisplayChannel(channel)}
                 disabled={loading}
                 markerLabel={stainingPanel.assignments.filter((item) => item.channel === channel && item.marker.trim()).map((item) => item.marker).join(' + ')}
@@ -778,7 +789,7 @@ export default function Workbench({ userName }: { userName: string }) {
             {(draggingFile || !image) && <button type="button" className="central-dropzone" disabled={loading} onClick={() => fileInput.current?.click()}><strong>Drop ND2, TIFF, or JP2</strong><span>or choose a file</span></button>}
 
             {drawing && <div className="drawing-hint">Drag on the image to add a region</div>}
-            <div className="legend"><span><i className="positive" /> Positive stain</span><span><i className="structure" /> Selected region</span><span><i className="excluded" /> Excluded</span></div>
+            {view !== 'original' && <div className="legend"><span><i className="positive" /> Positive stain</span><span><i className="structure" /> Selected region</span><span><i className="excluded" /> Excluded</span></div>}
           </div>
 
           <div className={`analysis-message ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'} aria-live={error ? 'assertive' : 'polite'}><i>{error ? '!' : loading ? '…' : analysisRecord ? '✓' : 'i'}</i><span>{error || message}</span></div>

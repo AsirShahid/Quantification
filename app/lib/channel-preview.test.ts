@@ -58,3 +58,19 @@ test('fluorescence channel settings persist across marker names without sharing 
   assert.notEqual(channelSettingsKey('DAPI (IF)', 'red'), channelSettingsKey('DAPI (IF)', 'blue'));
   assert.notEqual(channelSettingsKey('PAS', 'red'), channelSettingsKey('DAPI (IF)', 'red'));
 });
+
+
+test('display windows map black, midtone and saturation identically in RGB panes and composite', () => {
+  const low = [10, 100, 1000], high = [210, 2100, 21000];
+  const composite = renderPreview(image, 'composite', high, [1,1,1], options, 'original', low);
+  assert.deepEqual(Array.from(composite.slice(4,8)), [0,0,0,255]);
+  assert.deepEqual(Array.from(composite.slice(8,12)), [242,242,242,255]);
+  assert.deepEqual(Array.from(composite.slice(12,16)), [255,255,255,255]);
+  for (const [index, channel] of (['red','green','blue'] as const).entries()) {
+    const pane = renderPreview(image, channel, high, [1,1,1], options, 'original', low);
+    for (let i=0;i<4;i++) assert.equal(pane[i*4+index], composite[i*4+index]);
+  }
+  const mask = renderPreview(image, 'red', high, [1,1,1], { ...options, minThreshold: 10, maxThreshold: 200 }, 'mask', low);
+  assert.deepEqual([mask[0],mask[4],mask[8],mask[12]], [0,255,255,0]);
+  assert.deepEqual(mask, renderPreview(image, 'red', [65535,65535,65535], [.2,.2,.2], { ...options, minThreshold: 10, maxThreshold: 200 }, 'mask'));
+});

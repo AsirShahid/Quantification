@@ -14,7 +14,7 @@ export default function ChannelTile({ image, channel, ranges, settings, options,
   useEffect(() => {
     if (!canvas.current || !available) return;
     const context = canvas.current.getContext('2d');
-    const pixels = renderPreview(image, channel, ranges, [settings.brightness, settings.brightness, settings.brightness], { ...options, signalChannel: channel, minThreshold: settings.minimum, maxThreshold: settings.maximum }, view);
+    const pixels = renderPreview(image, channel, ranges.map((value, index) => index === { red: 0, green: 1, blue: 2 }[channel] ? settings.displayMaximum ?? value : value), [settings.brightness, settings.brightness, settings.brightness], { ...options, signalChannel: channel, minThreshold: settings.minimum, maxThreshold: settings.maximum }, view, [settings.displayMinimum ?? 0, settings.displayMinimum ?? 0, settings.displayMinimum ?? 0]);
     context?.putImageData(new ImageData(pixels, image.width, image.height), 0, 0);
   }, [image, channel, ranges, settings, options, view, available]);
   return <div className={`channel-tile ${active ? 'selected' : ''}`}>

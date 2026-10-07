@@ -1,7 +1,7 @@
 import { analyzeImage, stainScore, thresholdMaximum, type AnalysisOptions, type DecodedImage } from './image-analysis.ts';
 
 export type Channel = AnalysisOptions['signalChannel'];
-export type ChannelSettings = { minimum: number; maximum: number; brightness: number };
+export type ChannelSettings = { minimum: number; maximum: number; brightness: number; displayMinimum?: number; displayMaximum?: number };
 
 // Fluorescent marker names share intensity units; keep each color's edits across marker selection.
 export function channelSettingsKey(stain: string, channel: Channel) {
@@ -63,13 +63,13 @@ export function displayRanges(image: DecodedImage): [number, number, number] {
     let total = 0;
     for (let value = 0; value <= max; value++) {
       total += histogram[value];
-      if (total >= count * .995) return Math.max(1, value);
+      if (total >= count) return Math.max(1, value);
     }
     return max;
   }) as [number, number, number];
 }
 
-export function renderPreview(image: DecodedImage, channel: Channel | 'composite', ranges: number[], brightness: number[], options: AnalysisOptions, view: 'original' | 'overlay' | 'mask') {
+export function renderPreview(image: DecodedImage, channel: Channel | 'composite', ranges: number[], brightness: number[], options: AnalysisOptions, view: 'original' | 'overlay' | 'mask', displayMinimum: number[] = [0, 0, 0]) {
   const pixels = new Uint8ClampedArray(image.rgba.length);
   let result = null;
   if (view !== 'original') {
@@ -78,7 +78,7 @@ export function renderPreview(image: DecodedImage, channel: Channel | 'composite
   const component = { red: 0, green: 1, blue: 2, grayscale: -1, composite: -1 }[channel];
   for (let i = 0; i < image.width * image.height; i++) {
     const values = components(image, i);
-    for (let c = 0; c < 3; c++) pixels[i * 4 + c] = component < 0 || component === c ? Math.round(values[c] * 255 / ranges[c] * brightness[c]) : 0;
+    for (let c = 0; c < 3; c++) pixels[i * 4 + c] = component < 0 || component === c ? Math.round(Math.max(0, Math.min(1, (values[c] - displayMinimum[c]) / Math.max(1, ranges[c] - displayMinimum[c]))) * 255 * brightness[c]) : 0;
     pixels[i * 4 + 3] = 255;
     if (result && view === 'mask') {
       const value = result.positiveMask[i] ? 255 : 0;

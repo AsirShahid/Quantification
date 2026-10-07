@@ -99,3 +99,9 @@ It is not the required production host. The application and private companion ca
 Structure-specific regions are selected and reviewed by the analyst; they are not produced by a validated automatic histology model. First-plane selection, preview scaling, thresholding, background handling, and ROI measurements are experimental.
 
 Before publication—and before any use beyond exploratory research—validate thresholds, channel assignments, background tolerance, ROI selection, first-plane behavior, preview scaling, and agreement with the lab's Fiji workflow on a blinded test set. Add pixel calibration when physical units such as µm² or µm are required. Do not use KidneyQuant for diagnosis, treatment decisions, or other clinical purposes.
+
+### Display ranges and detection thresholds
+
+Each sidebar channel has separate display minimum/maximum and detection minimum/maximum. Display windows linearly map native values from black to full channel color (with clipping); brightness is an additional display-only multiplier. Automatic display uses the sampled channel maximum without percentile clipping. To compare with Fiji Brightness/Contrast, copy its display range into the display fields and set brightness to 1.0×. These values are not detection thresholds. Detection counts original intensities inclusively between its lower and upper limits; values above the upper limit are negative.
+
+Image view shows a clean composite using exactly the RGB panes’ display windows. Detection overlay and mask apply independently to each RGB pane; the composite shows the selected channel’s detection. Numeric edits apply on Enter or blur; Escape cancels. Preview sampling, channel mapping, plane selection, and background/ROI exclusions can affect comparison with Fiji; exact specimen validation requires the original image and matching settings.

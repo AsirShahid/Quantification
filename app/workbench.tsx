@@ -206,6 +206,7 @@ export default function Workbench({ userName }: { userName: string }) {
   const [rois, setRois] = useState<RoiRect[]>([]);
   const [drawing, setDrawing] = useState(false);
   const [view, setView] = useState<ViewMode>('original');
+  const [workspaceView,setWorkspaceView]=useState<'adjust'|'results'|'images'>('adjust');
   const [loading, setLoading] = useState(true);
   const [draggingFile, setDraggingFile] = useState(false);
   const [folderFiles, setFolderFiles] = useState<File[]>([]);
@@ -498,19 +499,23 @@ export default function Workbench({ userName }: { userName: string }) {
   };
 
   const pointInImage = (event: PointerEvent<HTMLCanvasElement>) => {
-    if (!image) return { x: 0, y: 0 };
-    const bounds = event.currentTarget.getBoundingClientRect();
-    return {
-      x: Math.max(0, Math.min(image.width, ((event.clientX - bounds.left) / bounds.width) * image.width)),
-      y: Math.max(0, Math.min(image.height, ((event.clientY - bounds.top) / bounds.height) * image.height)),
-    };
+    if (!image) return { x: 0, y: 0, inside:false };
+    const canvas=event.currentTarget,bounds=canvas.getBoundingClientRect();
+    // The canvas fills the tile while object-fit preserves the image aspect ratio.
+    // Map drawing coordinates to the visible image, excluding any letterbox space.
+    const scale=Math.min(bounds.width/canvas.width,bounds.height/canvas.height);
+    const width=canvas.width*scale,height=canvas.height*scale;
+    const x=(event.clientX-bounds.left-(bounds.width-width)/2)/width;
+    const y=(event.clientY-bounds.top-(bounds.height-height)/2)/height;
+    return {x:Math.max(0,Math.min(1,x))*image.width,y:Math.max(0,Math.min(1,y))*image.height,inside:x>=0&&x<=1&&y>=0&&y<=1};
   };
 
   const onPointerDown = (event: PointerEvent<HTMLCanvasElement>) => {
     if (!drawing || !image) return;
+    const point = pointInImage(event);
+    if(!point.inside)return;
     event.preventDefault();
     event.currentTarget.setPointerCapture(event.pointerId);
-    const point = pointInImage(event);
     draftRoiRef.current = { x: point.x, y: point.y, width: 0, height: 0, ...(drawShape==='freehand'?{points:[point]}:{}) };
     paintCanvas();
   };
@@ -790,13 +795,18 @@ export default function Workbench({ userName }: { userName: string }) {
         <div className="profile" title={userName}>{initials}</div>
       </header>
 
-      <section className="workspace-heading">
-        <div><p className="eyebrow">New analysis</p><h1>Turn stained tissue into auditable measurements.</h1><p className="lede">Upload a microscopy image, separate tissue from slide background, select any structure-specific regions, then review every counted pixel.</p></div>
-        <div className="format-badges"><span>TIFF</span><span>JP2</span><span>ND2 self-host</span><span>Folders</span></div>
-      </section>
+      <nav className="workspace-navigation" aria-label="Analysis workspace">
+        <h1>Image quantification</h1>
+        <div className="workspace-modes">
+          <button type="button" aria-pressed={workspaceView==='adjust'} onClick={()=>setWorkspaceView('adjust')}>Adjust &amp; threshold</button>
+          <button type="button" aria-pressed={workspaceView==='results'} onClick={()=>setWorkspaceView('results')}>Results &amp; export</button>
+          <button type="button" aria-pressed={workspaceView==='images'} onClick={()=>setWorkspaceView('images')}>Images only</button>
+        </div>
+        {batchBusy && <button type="button" onClick={()=>{batchCancel.current=true;}}>Stop after current tile</button>}
+      </nav>
 
-      <section className="workbench-grid">
-        <aside className="control-panel">{batchBusy && <button type="button" onClick={()=>{batchCancel.current=true;}}>Stop after current tile</button>}<fieldset disabled={batchBusy} className="study-disabled">
+      <section className="workbench-grid" data-workspace-view={workspaceView}>
+        <aside className="control-panel"><fieldset disabled={batchBusy} className="study-disabled">
           <div className="panel-title"><span>01</span><div><h2>Set up analysis</h2><p>Sample and staining details</p></div></div>
           <label className="field-label" htmlFor="sample-id">Sample ID <b>required</b></label>
           <input id="sample-id" className="text-input" value={sampleId} onChange={(event) => { setSampleId(event.target.value); invalidateAnalysis(); }} />
@@ -879,7 +889,6 @@ export default function Workbench({ userName }: { userName: string }) {
             <input ref={folderInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" multiple hidden onChange={onFolderChange} {...{ webkitdirectory: '', directory: '' }} />
           </div>
 
-          {image && channelMappingDisclosure && <p className="live-preview-note">{channelMappingDisclosure}</p>}
 
           <div className={`image-canvas ${draggingFile ? 'dragging' : ''} ${drawing ? 'drawing' : ''}`} onDragEnter={(event) => { event.preventDefault(); setDraggingFile(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={() => setDraggingFile(false)} onDrop={onDrop}>
             {image && previewImage && <div className="channel-grid">
@@ -899,7 +908,6 @@ export default function Workbench({ userName }: { userName: string }) {
           </div>
 
           <div className={`analysis-message ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'} aria-live={error ? 'assertive' : 'polite'}><i>{error ? '!' : loading ? '…' : analysisRecord ? '✓' : 'i'}</i><span>{error || message}</span></div>
-          <p className="live-preview-note">Live preview uses a smaller image for responsiveness. Click Analyze all channels for full-resolution measurements and exports. Draw tissue or glomerular outlines on the composite view.</p>
           <details className="image-details"><summary>Image details</summary><div className="stage-caption">
             <span>{image ? `${image.width.toLocaleString()} × ${image.height.toLocaleString()} px` : '—'}</span>
             <span>{image ? `Source: ${image.sourceFormat}` : '—'}</span>
@@ -911,12 +919,16 @@ export default function Workbench({ userName }: { userName: string }) {
             <span>{image ? `Plane selection: ${formatPlaneSelection(image.planeSelection)}` : '—'}</span>
             <span>{image ? `Processing: ${image.processing} (${image.processingLocation})` : '—'}</span>
             <span>{removeBackground ? 'Background separation on' : 'Background included'}</span>
-          </div></details>
+          </div>
+          {image && channelMappingDisclosure && <p className="live-preview-note">{channelMappingDisclosure}</p>}
+          <p className="live-preview-note">Live preview uses a smaller image for responsiveness. Click Analyze all channels for full-resolution measurements and exports. Draw tissue or glomerular outlines on the composite view.</p>
           {image && <p className="validation-note" style={{ padding: '0 15px 12px', margin: 0 }}>
             {image.quantitativeStatus === 'demonstration'
               ? `Bundled ${SYNTHETIC_DEMO_NAME} is procedurally generated synthetic data with no specimen or acquisition. Demonstration only; measurements are experimental and not validated.`
               : 'Experimental quantification only — source processing, stain scoring, and thresholds are not validated.'}
           </p>}
+          </details>
+
         </section>
 
         <ResultsPanel tiles={mergeStudyTiles(projectTiles,studyTiles)} records={channelRecords} hasStudy={studyTiles.length+projectTiles.length>0} exporting={exporting} onExcel={exportExcel} onCsv={exportCsv} onJson={exportJson} />

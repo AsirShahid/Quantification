@@ -43,12 +43,12 @@ export default function StainingPanelControls({ panel, channelCount, disabled, o
       </div>;
     })}
     {panel.coStained === 'yes' && panel.assignments.length < 3 && <button type="button" className="stain-action" onClick={() => onChange({ ...panel, assignments: [...panel.assignments, { id: crypto.randomUUID(), marker: '', channel: 'green', reagent: '' }] })}>Add stain</button>}
-    <label className="field-label" htmlFor="stain-channel-view">Stain / channel to view and quantify</label>
+    <label className="field-label" htmlFor="stain-channel-view">Stain to edit</label>
     <select id="stain-channel-view" className="select-input" value={panel.activeId ?? ''} onChange={(event) => onChange({ ...panel, activeId: event.target.value || null })}>
-      <option value="">Use manual staining settings</option>
+      <option value="">Choose channel directly</option>
       {panel.assignments.map((assignment, index) => <option key={assignment.id} value={assignment.id} disabled={!assignment.marker.trim() || !channelAvailable(assignment.channel, channelCount)}>{assignment.marker || `Stain ${index + 1} (choose a name)`} — {assignment.channel}{!channelAvailable(assignment.channel, channelCount) ? ' (unavailable)' : ''}</option>)}
     </select>
-    <p className="validation-note">Selecting a stain switches the preview and fluorescence measurement channel. Review thresholds, then rerun analysis. Assign colors from your fluorophore and image channel mapping; antibody catalog numbers alone do not specify a color.</p>
+    <p className="validation-note">Selecting a stain opens its channel controls without changing other stain assignments. Analysis scope determines which channels are measured. Review thresholds, then rerun analysis. Assign colors from your fluorophore and image channel mapping; antibody catalog numbers alone do not specify a color.</p>
     {panel.assignments.some((item, index) => item.marker && panel.assignments.some((other, otherIndex) => otherIndex < index && other.marker && other.channel === item.channel)) && <p className="validation-note">Stains assigned to the same channel share a combined signal; this view cannot separate them.</p>}
   </fieldset>;
 }

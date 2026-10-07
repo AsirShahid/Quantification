@@ -138,7 +138,7 @@ export function buildAnalysisRecord(input: BuildAnalysisRecordInput) {
     metrics,
     metricDefinitions,
     algorithms: {
-      stainScore: image.analysisWorkflow === 'sirius-magenta' ? 'CMYK-magenta-(maxRGB-G)/maxRGB; undefined black scores excluded' : image.samples ? 'kidneyquant-native-integer-score-v2-experimental' : 'kidneyquant-rgb-score-v1-experimental',
+      stainScore: image.analysisWorkflow === 'sirius-magenta' ? 'CMYK-magenta-(maxRGB-G)/maxRGB; undefined black scores excluded' : image.analysisWorkflow === 'fluorescence-8bit' ? 'kidneyquant-converted-8bit-score-v1-experimental' : image.samples ? 'kidneyquant-native-integer-score-v2-experimental' : 'kidneyquant-rgb-score-v1-experimental',
       background: settings.removeBackground ? 'border-connected-source-rgb-distance-v1' : 'disabled',
       perimeter: '4-neighbor-grid-edge-v1',
     },

@@ -26,6 +26,16 @@ test('group summaries preserve hierarchy, unequal tile counts, empty regions and
  assert.equal(groups[1].n,1);assert.equal(groups[1].sd,null);
  assert.equal(mergeStudyTiles(data,[tile('a','WT','M1',50)]).length,data.length);
 });
+test('Excel keeps differently cased marker names in distinct valid worksheets',async()=>{
+ const data=[tile('a','WT','M1',10),tile('b','WT','M1',30)];
+ data[0].records[0].analysis.stain='DAPI (IF)';
+ data[1].records[0].analysis.stain='dapi (IF)';
+ const bytes=await channelWorkbook([],data);const book=new ExcelJS.Workbook();await book.xlsx.load(Buffer.from(bytes));
+ const names=book.worksheets.map(sheet=>sheet.name.toLowerCase());
+ assert.equal(new Set(names).size,names.length);
+ assert.deepEqual(book.worksheets.slice(0,2).map(sheet=>sheet.getCell('A1').value),['DAPI (IF)','dapi (IF)']);
+});
+
 test('Excel preserves every tile in nested mouse columns and separates duplicate mouse IDs across groups',async()=>{
  const data=[tile('a','WT','M1',10),tile('b','WT','M1',30),tile('c','WT','M2',80),tile('empty','WT','M2',0,0),tile('d','KO','M1',70)];
  const bytes=await channelWorkbook([],data);const book=new ExcelJS.Workbook();await book.xlsx.load(Buffer.from(bytes));

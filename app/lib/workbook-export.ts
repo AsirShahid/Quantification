@@ -9,9 +9,9 @@ export async function channelWorkbook(records:AnalysisRecord[], tiles:StudyTile[
  const all=entries.flatMap(t=>t.records);
  const headers=['Row','Label / filename','Area','Mean','Min','Max','IntDen','%Area','RawIntDen','MinThr','MaxThr','Area units'];
  const stains=[...new Set(all.map(r=>r.analysis.stain==='Channel intensity (IF)'?`${r.analysis.signalChannel} channel`:r.analysis.stain))];
- const usedNames=new Set(['Reference thresholds','Provenance','Sample summary','Group summary','Tile values','Group thresholds']);
+ const usedNames=new Set(['Reference thresholds','Provenance','Sample summary','Group summary','Tile values','Group thresholds'].map(name=>name.toLowerCase()));
  for(const staining of stains) {
-  let name=staining.replace(/[\\/?*\[\]:]/g,' ').slice(0,31)||'Staining';const base=name;let suffix=2;while(usedNames.has(name)){name=base.slice(0,27)+' '+suffix++;}usedNames.add(name);
+  let name=staining.replace(/[\\/?*\[\]:]/g,' ').slice(0,31)||'Staining';const base=name;let suffix=2;while(usedNames.has(name.toLowerCase())){name=base.slice(0,27)+' '+suffix++;}usedNames.add(name.toLowerCase());
   const sheet=workbook.addWorksheet(name);sheet.getRow(1).values=[staining];sheet.getRow(2).values=['Each sample has its own column group. Tiles run vertically. Baseline and threshold-positive rows share the same ROI denominator.'];
   const relevant=entries.flatMap(tile=>tile.records.filter(r=>(r.analysis.stain==='Channel intensity (IF)'?`${r.analysis.signalChannel} channel`:r.analysis.stain)===staining).map(record=>({tile,record})));
   const sampleKey=(r:AnalysisRecord)=>JSON.stringify([r.groupName,r.sampleId,r.analysis.structureCategory,r.analysis.signalChannel]);
@@ -53,7 +53,7 @@ export async function channelWorkbook(records:AnalysisRecord[], tiles:StudyTile[
   const context=JSON.parse(panel) as string[];
   const relevant=sampleRows.filter(m=>JSON.stringify([m.staining,m.channel,m.region])===panel);
   const names=[...new Set(relevant.map(m=>m.group))];
-  let nestedName=`GraphPad tiles ${i+1}`,suffix=2;while(usedNames.has(nestedName))nestedName=`GraphPad tiles ${i+1} (${suffix++})`;const nested=workbook.addWorksheet(nestedName);usedNames.add(nested.name);
+  let nestedName=`GraphPad tiles ${i+1}`,suffix=2;while(usedNames.has(nestedName.toLowerCase()))nestedName=`GraphPad tiles ${i+1} (${suffix++})`;const nested=workbook.addWorksheet(nestedName);usedNames.add(nested.name.toLowerCase());
   nested.addRow([context.join(' · ')]);
   nested.addRow(['Nested layout: groups across, one sample per subcolumn, all tile % area values down rows. Blank = missing/empty region, not zero. See Tile values for filenames. Rows are not paired between samples.']);
   const width=Math.max(...names.map(name=>relevant.filter(m=>m.group===name).length));

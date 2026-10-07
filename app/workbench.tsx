@@ -331,7 +331,7 @@ export default function Workbench({ userName }: { userName: string }) {
             if (requestId !== analysisRequestId.current) return;
             setChannelRecords(records);
             if(acceptedRef.current) {
-              const entry:StudyTile={id:JSON.stringify([groupName,studySample||sampleId,stain,structure,decoded.sourceSha256,sourceName]),name:sourceName,records,screenshots:captureChannels(decoded,channelSettings,settings),displaySettings:structuredClone(channelSettings),reference:references.some(r=>r.sampleId===(studySample||sampleId)&&r.sourceId===decoded.sourceSha256+sourceName)};
+              const entry:StudyTile={id:JSON.stringify([groupName.trim()||'Ungrouped',(studySample||sampleId).trim(),profile,structure,decoded.sourceSha256,sourceName]),name:sourceName,records,screenshots:captureChannels(decoded,channelSettings,settings),displaySettings:structuredClone(channelSettings),reference:references.some(r=>r.sampleId===(studySample||sampleId)&&r.sourceId===decoded.sourceSha256+sourceName)};
               setStudyTiles(current=>[...current.filter(tile=>tile.id!==entry.id),entry]);
             }
             setAnalysisRecord(records.find(record => record.analysis.signalChannel === signalChannel) ?? records[0]);
@@ -352,7 +352,7 @@ export default function Workbench({ userName }: { userName: string }) {
       });
     },
     [
-      image, stain, stainingPanel, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
+      image, stain, profile, stainingPanel, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
       outsideMode, structure, rois, userName, sampleId, sourceName, sourceSize, sourceLastModified, channelSettings, studySample, references, groupName, effectiveScope,
     ],
   );
@@ -702,7 +702,7 @@ export default function Workbench({ userName }: { userName: string }) {
   };
   const finishGroup=()=>{
     const name=groupName.trim()||'Ungrouped';
-    const id=JSON.stringify([name,stain,stainingPanel.assignments.map(a=>[a.marker,a.channel,a.reagent])]);
+    const id=JSON.stringify([name,profile,stainingPanel.assignments.map(a=>[a.marker,a.channel,a.reagent])]);
     const entry:SavedGroup={id,name,stain,panel:structuredClone(stainingPanel),references,accepted,reason:groupReason};
     setSavedGroups(current=>[...current.filter(g=>g.id!==id),entry]);
     setProjectReferences(current=>[...current.filter(r=>!(r.groupName===name&&r.stain===stain)),...references]);
@@ -738,7 +738,7 @@ export default function Workbench({ userName }: { userName: string }) {
           if(!shared || required.some(c=>!accepted[channelSettingsKey(stain,c as SignalChannel)])) throw new Error('Channel set differs from reference tiles.');
           const settings:AnalysisSettingsSnapshot={stain,stainingPanel,signalChannel:channel,minThreshold:shared.minimum,maxThreshold:shared.maximum,structure,rois:[],removeBackground,backgroundTolerance,outsideMode};
           const records=analyzeChannels(decoded,settings,accepted,{analyst:userName,sampleId:studySample.trim()||sampleId,groupName:groupName.trim()||'Ungrouped',sourceName:name,sourceSize:file.size,sourceLastModified:file.lastModified},effectiveScope);
-          const entry:StudyTile={id:JSON.stringify([groupName,studySample||sampleId,stain,structure,decoded.sourceSha256,name]),name,records,screenshots:captureChannels(decoded,accepted,settings),displaySettings:structuredClone(accepted),reference:!!reference};
+          const entry:StudyTile={id:JSON.stringify([groupName.trim()||'Ungrouped',(studySample||sampleId).trim(),profile,structure,decoded.sourceSha256,name]),name,records,screenshots:captureChannels(decoded,accepted,settings),displaySettings:structuredClone(accepted),reference:!!reference};
           setStudyTiles(current=>[...current.filter(r=>r.id!==entry.id),entry]);
         } catch(cause) {failures.push(`${name}: ${errorMessage(cause,'Failed')}`);}
       }

@@ -6,6 +6,10 @@ KidneyQuant is a private, self-hostable kidney tissue stain-analysis workbench. 
 
 > **Research use only.** KidneyQuant is an experimental research workflow, not a medical device, diagnostic system, or validated clinical tool.
 
+## Integration notes
+
+See [study-workflow changes, fixes, measurement differences, and verification](docs/study-workflow-integration.md).
+
 ## Current capabilities
 
 - Unsigned, uncompressed, single-plane **BlackIsZero grayscale or interleaved RGB TIFF** decoding locally in the browser; compressed, palette, CMYK, two-sample, alpha, planar-separate, signed, floating-point, and multipage TIFF variants fail closed

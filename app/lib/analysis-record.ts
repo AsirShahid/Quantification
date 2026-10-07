@@ -1,6 +1,6 @@
 import type { AnalysisResult, DecodedImage, RoiRect } from './image-analysis';
 
-export const ANALYSIS_SCHEMA_VERSION = '1.0.0-experimental';
+export const ANALYSIS_SCHEMA_VERSION = '1.1.0-experimental';
 
 export type AnalysisSettingsSnapshot = {
   stain: string;
@@ -107,6 +107,8 @@ export function buildAnalysisRecord(input: BuildAnalysisRecordInput) {
       structureCategory: settings.structure,
       minThreshold: settings.minThreshold,
       maxThreshold: settings.maxThreshold,
+      scoreBitDepth: image.analysisBitDepth ?? 8,
+      intensitySource: image.samples ? 'native-integer-samples' : '8bit-display',
       thresholdBounds: 'inclusive' as const,
       removeBackground: settings.removeBackground,
       backgroundTolerance: settings.backgroundTolerance,
@@ -116,7 +118,7 @@ export function buildAnalysisRecord(input: BuildAnalysisRecordInput) {
     metrics,
     metricDefinitions,
     algorithms: {
-      stainScore: 'kidneyquant-rgb-score-v1-experimental',
+      stainScore: image.samples ? 'kidneyquant-native-integer-score-v2-experimental' : 'kidneyquant-rgb-score-v1-experimental',
       background: settings.removeBackground ? 'border-connected-source-rgb-distance-v1' : 'disabled',
       perimeter: '4-neighbor-grid-edge-v1',
     },
@@ -180,6 +182,8 @@ export function analysisRecordToCsv(record: AnalysisRecord) {
     ['Structure_Category', record.analysis.structureCategory],
     ['Min_Threshold', record.analysis.minThreshold],
     ['Max_Threshold', record.analysis.maxThreshold],
+    ['Score_Bit_Depth', record.analysis.scoreBitDepth],
+    ['Intensity_Source', record.analysis.intensitySource],
     ['Threshold_Bounds', record.analysis.thresholdBounds],
     ['Remove_Background', record.analysis.removeBackground],
     ['Background_Tolerance', record.analysis.backgroundTolerance],

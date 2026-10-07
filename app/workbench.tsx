@@ -12,7 +12,7 @@ import {
 } from 'react';
 import {
   analyzeImage,
-  decodeMicroscopyFile,
+  thresholdMaximum,
   type AnalysisResult,
   type DecodedImage,
   type RoiRect,
@@ -24,6 +24,8 @@ import {
   type AnalysisSettingsSnapshot,
 } from './lib/analysis-record';
 import { applyChannelViewInPlace, prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
+
+import { loadMicroscopyFile } from './lib/image-loader';
 
 type ViewMode = 'overlay' | 'original' | 'mask';
 type OutsideMode = 'exclude' | 'report';
@@ -178,6 +180,8 @@ export default function Workbench({ userName }: { userName: string }) {
   const draftRoiRef = useRef<RoiRect | null>(null);
   const draftFrameRef = useRef<number | null>(null);
   const openRequestId = useRef(0);
+  const thresholdMaximumRef = useRef(255);
+  const openController = useRef<AbortController | null>(null);
   const analysisRequestId = useRef(0);
   const [sampleId, setSampleId] = useState('synthetic-demo-tile');
   const [sourceName, setSourceName] = useState(SYNTHETIC_DEMO_NAME);
@@ -204,6 +208,7 @@ export default function Workbench({ userName }: { userName: string }) {
   const [displayChannel, setDisplayChannel] = useState<DisplayChannel>('composite');
   const [message, setMessage] = useState('Loading the bundled procedurally generated synthetic demo tile…');
   const [error, setError] = useState('');
+  const [thresholdMax, setThresholdMax] = useState(255);
 
   const initials = useMemo(
     () =>
@@ -301,6 +306,9 @@ export default function Workbench({ userName }: { userName: string }) {
 
   const openFile = useCallback(async (file: File, demonstration = false, displayName = file.name) => {
     const requestId = ++openRequestId.current;
+    openController.current?.abort();
+    const controller = new AbortController();
+    openController.current = controller;
     analysisRequestId.current++;
     setLoading(true);
     setError('');
@@ -313,8 +321,14 @@ export default function Workbench({ userName }: { userName: string }) {
     setSourceLastModified(file.lastModified);
     setMessage(`Opening ${file.name}…`);
     try {
-      const decoded = await decodeMicroscopyFile(file);
-      if (requestId !== openRequestId.current) return;
+      const decoded = await loadMicroscopyFile(file, controller.signal);
+      if (controller.signal.aborted || requestId !== openRequestId.current) return;
+      const nextMaximum = thresholdMaximum(decoded);
+      const scale = nextMaximum / thresholdMaximumRef.current;
+      setMinThreshold((current) => Math.round(current * scale));
+      setMaxThreshold((current) => Math.round(current * scale));
+      thresholdMaximumRef.current = nextMaximum;
+      setThresholdMax(nextMaximum);
       setImage(decoded);
       setSignalChannel((current) => {
         if (decoded.channelCount <= 1) return 'grayscale';
@@ -328,12 +342,12 @@ export default function Workbench({ userName }: { userName: string }) {
         setMessage('Image ready. Adjust the settings, then analyze.');
       }
     } catch (openError) {
-      if (requestId === openRequestId.current) {
+      if (!controller.signal.aborted && requestId === openRequestId.current) {
         setError(`Could not decode ${displayName}: ${errorMessage(openError, 'The file could not be opened.')}`);
         setMessage('Choose another supported file or verify that the private image companion is healthy.');
       }
     } finally {
-      if (requestId === openRequestId.current) setLoading(false);
+      if (!controller.signal.aborted && requestId === openRequestId.current) setLoading(false);
     }
   }, []);
 
@@ -345,11 +359,11 @@ export default function Workbench({ userName }: { userName: string }) {
         return response.blob();
       })
       .then((blob) => {
-        if (!active) return;
+        if (!active || openRequestId.current > 0) return;
         return openFile(new File([blob], SYNTHETIC_DEMO_NAME, { type: 'image/jpeg', lastModified: 0 }), true);
       })
       .catch((referenceError) => {
-        if (active) {
+        if (active && openRequestId.current === 0) {
           setLoading(false);
           setError(`The bundled reference image could not be loaded: ${errorMessage(referenceError, 'Unknown decode error')}`);
         }
@@ -427,6 +441,7 @@ export default function Workbench({ userName }: { userName: string }) {
   }, [rois, paintCanvas]);
 
   useEffect(() => () => {
+    openController.current?.abort();
     if (draftFrameRef.current !== null) window.cancelAnimationFrame(draftFrameRef.current);
   }, []);
 
@@ -576,8 +591,8 @@ export default function Workbench({ userName }: { userName: string }) {
     const [minimum, maximum] = DEFAULT_THRESHOLDS[value] ?? [0, 255];
     setStain(value);
     setSignalChannel(DEFAULT_CHANNELS[value] ?? 'red');
-    setMinThreshold(minimum);
-    setMaxThreshold(maximum);
+    setMinThreshold(Math.round(minimum * thresholdMax / 255));
+    setMaxThreshold(Math.round(maximum * thresholdMax / 255));
     invalidateAnalysis();
   };
 
@@ -682,8 +697,21 @@ export default function Workbench({ userName }: { userName: string }) {
 
           {removeBackground && <><label className="field-label compact" htmlFor="outside-mode">Outside-tissue handling</label><select id="outside-mode" className="select-input" value={outsideMode} onChange={(event) => { setOutsideMode(event.target.value as OutsideMode); invalidateAnalysis(); }}><option value="exclude">Exclude from calculations</option><option value="report">Exclude and report separately</option></select><label className="field-label compact" htmlFor="background-tolerance">Background tolerance <span>{backgroundTolerance}</span></label><input id="background-tolerance" className="single-range" type="range" min="4" max="60" value={backgroundTolerance} onChange={(event) => { setBackgroundTolerance(Number(event.target.value)); invalidateAnalysis(); }} /></>}
 
-          <div className="threshold-card"><div className="threshold-title"><strong>Positive stain threshold</strong><span>Manual</span></div><label htmlFor="minimum-threshold">Minimum <b>{minThreshold}</b></label><input id="minimum-threshold" className="single-range berry" type="range" min="0" max="255" value={minThreshold} onChange={(event) => { setMinThreshold(Math.min(Number(event.target.value), maxThreshold)); invalidateAnalysis(); }} /><label htmlFor="maximum-threshold">Maximum <b>{maxThreshold}</b></label><input id="maximum-threshold" className="single-range berry" type="range" min="0" max="255" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.max(Number(event.target.value), minThreshold)); invalidateAnalysis(); }} /></div>
-          <p className="validation-note">{stainScoreDescription(stain, signalChannel)}</p>
+          <div className="threshold-card">
+            <div className="threshold-title"><strong>Positive stain threshold</strong><span>{thresholdMax === 65535 ? '16-bit' : '8-bit'}</span></div>
+            <label htmlFor="minimum-threshold-value">Minimum</label>
+            <input disabled={loading} id="minimum-threshold-value" className="text-input" type="number" min="0" max={maxThreshold} step="1" value={minThreshold} onChange={(event) => { setMinThreshold(Math.max(0, Math.min(Math.round(Number(event.target.value)), maxThreshold))); invalidateAnalysis(); }} />
+            <input disabled={loading} id="minimum-threshold" aria-label="Minimum threshold slider" className="single-range berry" type="range" min="0" max={thresholdMax} step="1" value={minThreshold} onChange={(event) => { setMinThreshold(Math.min(Number(event.target.value), maxThreshold)); invalidateAnalysis(); }} />
+            <label htmlFor="maximum-threshold-value">Maximum</label>
+            <input disabled={loading} id="maximum-threshold-value" className="text-input" type="number" min={minThreshold} max={thresholdMax} step="1" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.min(thresholdMax, Math.max(Math.round(Number(event.target.value)), minThreshold))); invalidateAnalysis(); }} />
+            <input disabled={loading} id="maximum-threshold" aria-label="Maximum threshold slider" className="single-range berry" type="range" min="0" max={thresholdMax} step="1" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.max(Number(event.target.value), minThreshold)); invalidateAnalysis(); }} />
+            <p className="validation-note">Range: 0–{formatInteger(thresholdMax)}. Both limits are inclusive.</p>
+          </div>
+          <p className="validation-note">{thresholdMax === 65535
+            ? stain.includes('(IF)')
+              ? 'Thresholds use original 16-bit channel intensities. Preview brightness does not change measurements.'
+              : 'Stain scores use original 16-bit intensities on a 0–65,535 scale; H&E offsets scale proportionally. These stain transforms differ from Fiji intensity thresholding.'
+            : stainScoreDescription(stain, signalChannel)}</p>
 
           <button type="button" className="primary-button" disabled={!image || loading || !sampleId.trim()} onClick={() => runAnalysis()}>{loading ? 'Working…' : 'Analyze image'} <span>→</span></button>
           <p className="validation-note">Research-use workflow. Thresholds and ROI regions must be reviewed before statistical analysis.</p>
@@ -694,7 +722,7 @@ export default function Workbench({ userName }: { userName: string }) {
             <div className="file-chip" title={sourceName}><i /> {sourceName} <span>{formatBytes(sourceSize)}</span></div>
             {folderFiles.length > 1 && <div className="folder-nav" aria-label="Folder image navigation"><button type="button" aria-label="Previous file" disabled={loading || folderIndex === 0} onClick={() => openFolderFile(folderIndex - 1)}>‹</button><span>{folderIndex + 1} / {folderFiles.length}</span><button type="button" aria-label="Next file" disabled={loading || folderIndex === folderFiles.length - 1} onClick={() => openFolderFile(folderIndex + 1)}>›</button></div>}
             <div className="view-tabs" aria-label="Image view">{(['overlay', 'original', 'mask'] as ViewMode[]).map((option) => <button key={option} type="button" aria-pressed={view === option} className={view === option ? 'active' : ''} onClick={() => setView(option)}>{option}</button>)}</div>
-            <div className="open-actions"><button className="replace-button" type="button" disabled={loading} onClick={() => fileInput.current?.click()}>Open file</button><button className="replace-button" type="button" disabled={loading} onClick={() => folderInput.current?.click()}>Open folder</button></div>
+            <div className="open-actions"><button className="replace-button" type="button" onClick={() => fileInput.current?.click()}>Open file</button><button className="replace-button" type="button" onClick={() => folderInput.current?.click()}>Open folder</button></div>
             <input ref={fileInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" hidden onChange={onFileChange} />
             <input ref={folderInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" multiple hidden onChange={onFolderChange} {...{ webkitdirectory: '', directory: '' }} />
           </div>

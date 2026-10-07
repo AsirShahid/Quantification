@@ -11,6 +11,8 @@ KidneyQuant is a private, self-hostable kidney tissue stain-analysis workbench. 
 - Unsigned, uncompressed, single-plane **BlackIsZero grayscale or interleaved RGB TIFF** decoding locally in the browser; compressed, palette, CMYK, two-sample, alpha, planar-separate, signed, floating-point, and multipage TIFF variants fail closed
 - JP2-family and ND2 decoding through the included private Python companion service
 - Stain modes for alpha-SMA IF, vimentin IF, lotus lectin/LTL IF, Sirius Red, PAS, and H&E
+- Color-coded RGB channel views and exact numeric threshold entry: 0–255 for 8-bit samples, 0–65,535 for 16-bit samples
+- Background-worker image decoding with cancellable loading
 - Configurable fluorescence signal channel and positive-stain thresholds
 - Connected slide-background detection with exclusion or separate reporting
 - Analyst-defined rectangular ROI categories for glomeruli, podocytes, proximal tubules, all tubules, and interstitial tissue; these labels do not perform anatomical segmentation
@@ -50,7 +52,7 @@ Configure Nginx Proxy Manager to forward the HTTPS proxy host to `kidneyquant-au
 - JP2-family and ND2 files are sent through the authenticated web route to the private companion. The companion uses request-scoped temporary storage and deletes the upload after decoding.
 - The authenticated ingress and companion are configured for a **512 MiB maximum upload**; browser-local TIFF/JPEG demonstration input has a stricter **128 MiB** limit. Reverse proxies in front of `auth` must use at least the intended companion limit or document the lower effective limit.
 - Decoding fails closed above **8 million pixels per selected plane** or more than **3 retained channels/components**.
-- The current experimental pipeline selects the first available ND2 image plane and converts supported source pixels to an 8-bit display/analysis representation. A 16-bit TIFF is likewise converted to 8-bit in the browser. This is not full-bit-depth quantitative processing.
+- The experimental pipeline selects the first available ND2 plane. Supported unsigned samples up to 16 bits are preserved for measurement; only the preview is converted to 8-bit. ND2/JP2 native samples use a lossless gzip transport, requiring the updated web and companion services. Sources with 9–16 significant bits use the full unsigned 16-bit threshold range. Signed and floating-point data are not supported.
 - CSV and JSON exports stay with the user. Phase 1 has no project database or image archive.
 
 ## Bundled demonstration asset
@@ -67,6 +69,6 @@ It is not the required production host. The application and private companion ca
 
 ## Scientific scope
 
-Structure-specific regions are selected and reviewed by the analyst; they are not produced by a validated automatic histology model. First-plane selection, 8-bit conversion, thresholding, background handling, and ROI measurements are experimental.
+Structure-specific regions are selected and reviewed by the analyst; they are not produced by a validated automatic histology model. First-plane selection, preview scaling, thresholding, background handling, and ROI measurements are experimental.
 
-Before publication—and before any use beyond exploratory research—validate thresholds, channel assignments, background tolerance, ROI selection, first-plane behavior, 8-bit conversion, and agreement with the lab's Fiji workflow on a blinded test set. Add pixel calibration when physical units such as µm² or µm are required. Do not use KidneyQuant for diagnosis, treatment decisions, or other clinical purposes.
+Before publication—and before any use beyond exploratory research—validate thresholds, channel assignments, background tolerance, ROI selection, first-plane behavior, preview scaling, and agreement with the lab's Fiji workflow on a blinded test set. Add pixel calibration when physical units such as µm² or µm are required. Do not use KidneyQuant for diagnosis, treatment decisions, or other clinical purposes.

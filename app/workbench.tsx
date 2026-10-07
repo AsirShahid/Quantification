@@ -738,7 +738,7 @@ export default function Workbench({ userName }: { userName: string }) {
       const bytes = await channelWorkbook(snapshot, exportedTiles, [...projectReferences,...references], accepted);
       const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
       const link = document.createElement('a');
-      link.href = url; link.download = `${safeExportName(snapshot[0].sampleId)}_channels.xlsx`;
+      link.href = url; link.download = `${safeExportName(snapshot[0].sampleId)}_staining_study.xlsx`;
       link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
     } catch (cause) { setError(errorMessage(cause, 'The workbook could not be exported.')); }
     finally { setExporting(false); }

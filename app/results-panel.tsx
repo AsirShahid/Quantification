@@ -19,7 +19,7 @@ export default function ResultsPanel({ records, hasStudy=false, exporting, onExc
       </section>)}
     </div>
     <div className="results-exports">
-      <button type="button" className="export-button" disabled={(!records.length && !hasStudy) || exporting} onClick={onExcel}>{exporting ? 'Preparing workbook…' : 'Export Excel · channel tabs'}</button>
+      <button type="button" className="export-button" disabled={(!records.length && !hasStudy) || exporting} onClick={onExcel}>{exporting ? 'Preparing workbook…' : 'Export Excel · staining tabs'}</button>
       <div className="secondary-exports"><button type="button" className="export-button" disabled={!records.length} onClick={onCsv}>Selected channel CSV</button><button type="button" className="export-button" disabled={!records.length} onClick={onJson}>All channels JSON</button></div>
       <p className="calibration-note">Full-resolution measurements. Screen areas use pixels. Excel uses µm² when source calibration is available.</p>
     </div>

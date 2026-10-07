@@ -182,3 +182,14 @@ button,input,select { font:inherit; } button { cursor:pointer; } button:disabled
 
 .source-specifications { font-size:11px; font-weight:400; color:#526358; }
 .compact-workspace .image-details summary { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+.png-annotation-dialog { width:min(1100px,96vw); max-height:96dvh; padding:16px; border:1px solid #a8b9ae; border-radius:12px; color:#193d2b; }
+.png-annotation-dialog::backdrop { background:rgba(0,0,0,.65); }
+.annotation-header { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+.annotation-header h2 { margin:0; font-size:20px; }.annotation-header p { margin:6px 0; font-size:12px; }
+.annotation-tools { display:flex; align-items:end; flex-wrap:wrap; gap:10px; padding:10px 0; }
+.annotation-tools label { display:flex; flex-direction:column; gap:4px; font-size:12px; }
+.annotation-tools select,.annotation-tools input,.png-annotation-dialog button { min-height:36px; padding:5px 9px; border:1px solid #b3c8bb; border-radius:5px; background:white; }
+.annotation-tools input[type=color] { width:54px; padding:2px; }.annotation-tools span { font-size:12px; align-self:center; }
+.annotation-image { display:flex; justify-content:center; background:#08100c; padding:4px; }
+.annotation-image canvas { display:block; width:auto; height:auto; max-width:100%; max-height:70dvh; object-fit:contain; touch-action:none; cursor:crosshair; }

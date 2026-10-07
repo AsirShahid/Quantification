@@ -29,6 +29,7 @@ import { captureChannels } from './lib/channel-capture';
 import { NumberField } from './channel-controls';
 import RoiEditor from './roi-editor';
 import ChannelTile from './channel-tile';
+import PngAnnotationEditor from './png-annotation-editor';
 import ResultsPanel from './results-panel';
 import { analyzeChannels, type AnalysisScope } from './lib/channel-analysis';
 import ChannelControls from './channel-controls';
@@ -167,6 +168,7 @@ export default function Workbench({ userName }: { userName: string }) {
   const [channelRecords, setChannelRecords] = useState<AnalysisRecord[]>([]);
   const [exporting, setExporting] = useState(false);
   const [analysisRecord, setAnalysisRecord] = useState<AnalysisRecord | null>(null);
+  const [pngEditor,setPngEditor]=useState<{source:string;filename:string}|null>(null);
   const [stain, setStain] = useState('Lotus lectin / LTL (IF)');
   const [conversionOverrides,setConversionOverrides]=useState<ConversionRange[]|undefined>();
   // Conversion depends on source pixels/ranges, never on a marker label or selected color.
@@ -747,7 +749,7 @@ export default function Workbench({ userName }: { userName: string }) {
   const saveScreenshot=()=>{
     if(!image)return;
     const screenshots=captureChannels(image,currentSettings(),{...previewOptions,rois});
-    const link=document.createElement('a');link.href=screenshots.all;link.download=`${safeExportName(sampleId)}_four_channels.png`;link.click();
+    setPngEditor({source:screenshots.all,filename:`${safeExportName(sampleId)}_four_channels.png`});
   };
 
   const exportCsv = () => {
@@ -897,7 +899,7 @@ export default function Workbench({ userName }: { userName: string }) {
           <div className="stage-toolbar">
             <div className="file-chip" title={sourceName}><i /> {sourceName} <span>{formatBytes(sourceSize)}</span></div>
             {folderFiles.length > 1 && <div className="folder-nav" aria-label="Folder image navigation"><button type="button" aria-label="Previous file" disabled={loading || folderIndex === 0} onClick={() => openFolderFile(folderIndex - 1)}>‹</button><label htmlFor="folder-image" className="sr-only">Image / tile ID</label><select id="folder-image" aria-label="Image / tile ID" disabled={loading} value={folderIndex} onChange={event=>openFolderFile(Number(event.target.value))}>{folderFiles.map((file,index)=><option key={index} value={index}>{index+1}. {file.webkitRelativePath||file.name}</option>)}</select><button type="button" aria-label="Next file" disabled={loading || folderIndex === folderFiles.length - 1} onClick={() => openFolderFile(folderIndex + 1)}>›</button></div>}
-            <button type="button" className="replace-button" disabled={!image||loading} onClick={saveScreenshot}>Save 4-channel PNG</button><div className="view-tabs" aria-label="Image view"><button type="button" aria-pressed={view==='overlay'} onClick={()=>setView(view==='original'?'overlay':'original')}>{view==='overlay'?'Hide counted pixels':'Show counted pixels'}</button></div>
+            <button type="button" className="replace-button" disabled={!image||loading} onClick={saveScreenshot}>Annotate / save PNG</button><div className="view-tabs" aria-label="Image view"><button type="button" aria-pressed={view==='overlay'} onClick={()=>setView(view==='original'?'overlay':'original')}>{view==='overlay'?'Hide counted pixels':'Show counted pixels'}</button></div>
             <div className="open-actions"><button className="replace-button" type="button" onClick={() => fileInput.current?.click()}>Open file</button><button className="replace-button" type="button" onClick={() => folderInput.current?.click()}>Open folder</button></div>
             <input ref={fileInput} type="file" multiple accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" hidden onChange={onFileChange} />
             <input ref={folderInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" multiple hidden onChange={onFolderChange} {...{ webkitdirectory: '', directory: '' }} />
@@ -951,6 +953,7 @@ export default function Workbench({ userName }: { userName: string }) {
 
         <ResultsPanel tiles={mergeStudyTiles(projectTiles,studyTiles)} records={channelRecords} hasStudy={studyTiles.length+projectTiles.length>0} exporting={exporting} onExcel={exportExcel} onCsv={exportCsv} onJson={exportJson} />
       </section>
+      {pngEditor && <PngAnnotationEditor source={pngEditor.source} filename={pngEditor.filename} onClose={()=>setPngEditor(null)} />}
     </main>
   );
 }

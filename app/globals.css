@@ -84,3 +84,26 @@ button,input,select { font:inherit; } button { cursor:pointer; } button:disabled
 .channel-settings-footer button { padding:4px 8px; border:1px solid #ccd8d0; border-radius:5px; background:white; color:#27513a; font-size:10px; cursor:pointer; }
 
 .channel-control-caption { font-size:10px; font-weight:700; margin:14px 0 0; color:#40584a; }
+
+/* Results have their own scroll region; exports never disappear below it. */
+.results-panel { display:flex; flex-direction:column; min-width:0; }
+.results-scroll { min-height:0; overflow-y:auto; overscroll-behavior:contain; padding-right:6px; }
+.channel-result { padding-bottom:20px; margin-bottom:18px; border-bottom:1px solid var(--line); }
+.channel-result h3 { font-size:12px; overflow-wrap:anywhere; margin:0 0 8px; }
+.result-sample { font-size:10px; color:var(--muted); overflow-wrap:anywhere; }
+.results-exports { flex:none; border-top:1px solid var(--line); background:white; }
+.secondary-exports { display:flex; gap:6px; }
+@media(min-width:1100px) {
+  .workbench-grid { grid-template-columns:270px minmax(0,1fr) 290px; max-width:2000px; }
+  .control-panel { grid-row:1; }
+  .image-stage { grid-row:1; }
+  .results-panel { grid-column:3; grid-row:1; position:sticky; top:12px; max-height:calc(100dvh - 24px); }
+}
+@media(max-width:1099px) {
+  .image-stage { position:relative; top:auto; max-height:none; }
+  .results-panel { grid-column:1 / -1; grid-row:auto; position:relative; max-height:none; }
+  .results-scroll { max-height:65dvh; }
+  .control-panel { grid-row:1; }
+}
+@media(max-width:760px) { .control-panel { grid-row:2; } .results-panel { grid-row:3; } }
+@media(min-width:1500px) and (max-width:1799px) { .channel-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .channel-image { height:clamp(110px,23dvh,260px); } }

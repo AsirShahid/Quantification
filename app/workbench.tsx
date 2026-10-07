@@ -11,20 +11,20 @@ import {
   type PointerEvent,
 } from 'react';
 import {
-  analyzeImage,
   thresholdMaximum,
   type DecodedImage,
   type RoiRect,
 } from './lib/image-analysis';
 import {
   analysisRecordToCsv,
-  buildAnalysisRecord,
   type AnalysisRecord,
   type AnalysisSettingsSnapshot,
 } from './lib/analysis-record';
 import { prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
 
 import ChannelTile from './channel-tile';
+import ResultsPanel from './results-panel';
+import { analyzeChannels } from './lib/channel-analysis';
 import ChannelControls from './channel-controls';
 import { samplePreview, channelSettingsKey, automaticSettings, displayRanges, renderPreview, type ChannelSettings } from './lib/channel-preview';
 import { loadMicroscopyFile } from './lib/image-loader';
@@ -87,16 +87,6 @@ function stripExtension(name: string) {
   return name.replace(/\.[^.]+$/, '');
 }
 
-function formatInteger(value: number) {
-  return Math.round(value).toLocaleString('en-US');
-}
-
-function formatDecimal(value: number, digits = 2) {
-  return value.toLocaleString('en-US', {
-    minimumFractionDigits: digits,
-    maximumFractionDigits: digits,
-  });
-}
 
 function formatBytes(value: number) {
   if (!value) return '0 B';
@@ -188,6 +178,8 @@ export default function Workbench({ userName }: { userName: string }) {
   const [sourceSize, setSourceSize] = useState(0);
   const [sourceLastModified, setSourceLastModified] = useState(0);
   const [image, setImage] = useState<DecodedImage | null>(null);
+  const [channelRecords, setChannelRecords] = useState<AnalysisRecord[]>([]);
+  const [exporting, setExporting] = useState(false);
   const [analysisRecord, setAnalysisRecord] = useState<AnalysisRecord | null>(null);
   const [stain, setStain] = useState('Sirius Red');
   const [stainingPanel, setStainingPanel] = useState<StainingPanel>({
@@ -262,7 +254,7 @@ export default function Workbench({ userName }: { userName: string }) {
 
   const invalidateAnalysis = useCallback(() => {
     analysisRequestId.current++;
-    setAnalysisRecord(null);
+    setAnalysisRecord(null); setChannelRecords([]);
     setError('');
     setMessage('Settings changed — rerun analysis');
     if (image) setLoading(false);
@@ -276,7 +268,7 @@ export default function Workbench({ userName }: { userName: string }) {
         return;
       }
       if (structure !== 'Whole tissue' && rois.length === 0) {
-        setAnalysisRecord(null);
+        setAnalysisRecord(null); setChannelRecords([]);
         setError('No analyzable ROI is defined. Add at least one region, then rerun analysis.');
         return;
       }
@@ -302,7 +294,7 @@ export default function Workbench({ userName }: { userName: string }) {
       const requestId = ++analysisRequestId.current;
       setLoading(true);
       setError('');
-      setAnalysisRecord(null);
+      setAnalysisRecord(null); setChannelRecords([]);
       setMessage('Analyzing image…');
       // Two animation frames guarantee that the working state is painted before
       // the bounded synchronous analysis begins. Request IDs still discard stale work.
@@ -310,16 +302,10 @@ export default function Workbench({ userName }: { userName: string }) {
         window.requestAnimationFrame(() => {
           if (requestId !== analysisRequestId.current) return;
           try {
-            const nextResult = analyzeImage(decoded, settings);
+            const records = analyzeChannels(decoded, settings, channelSettings, provenance);
             if (requestId !== analysisRequestId.current) return;
-            const nextRecord = buildAnalysisRecord({
-              ...provenance,
-              analyzedAt: new Date().toISOString(),
-              image: decoded,
-              result: nextResult,
-              settings,
-            });
-            setAnalysisRecord(nextRecord);
+            setChannelRecords(records);
+            setAnalysisRecord(records.find(record => record.analysis.signalChannel === signalChannel) ?? records[0]);
             setMessage(
               settings.removeBackground && settings.outsideMode === 'report'
                 ? 'Analysis complete. Tissue and outside-tissue values are shown separately.'
@@ -327,7 +313,7 @@ export default function Workbench({ userName }: { userName: string }) {
             );
           } catch (analysisError) {
             if (requestId === analysisRequestId.current) {
-              setAnalysisRecord(null);
+              setAnalysisRecord(null); setChannelRecords([]);
               setError(errorMessage(analysisError, 'The image could not be analyzed.'));
             }
           } finally {
@@ -338,7 +324,7 @@ export default function Workbench({ userName }: { userName: string }) {
     },
     [
       image, stain, stainingPanel, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
-      outsideMode, structure, rois, userName, sampleId, sourceName, sourceSize, sourceLastModified,
+      outsideMode, structure, rois, userName, sampleId, sourceName, sourceSize, sourceLastModified, channelSettings,
     ],
   );
 
@@ -350,7 +336,7 @@ export default function Workbench({ userName }: { userName: string }) {
     analysisRequestId.current++;
     setLoading(true);
     setError('');
-    setAnalysisRecord(null);
+    setAnalysisRecord(null); setChannelRecords([]);
     setImage(null);
     setChannelSettings({});
     setView('original');
@@ -632,7 +618,8 @@ export default function Workbench({ userName }: { userName: string }) {
         if (stain.includes('(IF)') && channel !== signalChannel) setStain('Channel intensity (IF)');
         setStainingPanel((current) => ({ ...current, activeId: null }));
       }
-      invalidateAnalysis();
+      if (channelRecords.length) setAnalysisRecord(channelRecords.find(record => record.analysis.signalChannel === channel) ?? null);
+      else invalidateAnalysis();
     }
   };
 
@@ -644,6 +631,7 @@ export default function Workbench({ userName }: { userName: string }) {
     }
     if (channel !== 'grayscale') chooseDisplayChannel(channel);
     else { setSignalChannel(channel); invalidateAnalysis(); }
+    invalidateAnalysis();
     setMinThreshold(next.minimum); setMaxThreshold(next.maximum); setBrightness(next.brightness);
     setView('overlay');
   };
@@ -665,13 +653,26 @@ export default function Workbench({ userName }: { userName: string }) {
   const exportJson = () => {
     if (!analysisRecord) return;
     downloadText(
-      `${JSON.stringify(analysisRecord, null, 2)}\n`,
+      `${JSON.stringify(channelRecords, null, 2)}\n`,
       'application/json;charset=utf-8',
       `${safeExportName(analysisRecord.sampleId)}_quantification.json`,
     );
   };
 
-  const metrics = analysisRecord?.metrics;
+  const exportExcel = async () => {
+    if (!channelRecords.length) return;
+    const snapshot = channelRecords;
+    setExporting(true);
+    try {
+      const { channelWorkbook } = await import('./lib/workbook-export');
+      const bytes = await channelWorkbook(snapshot);
+      const url = URL.createObjectURL(new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const link = document.createElement('a');
+      link.href = url; link.download = `${safeExportName(snapshot[0].sampleId)}_channels.xlsx`;
+      link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (cause) { setError(errorMessage(cause, 'The workbook could not be exported.')); }
+    finally { setExporting(false); }
+  };
   const signalChannels = availableSignalChannels(image);
   const channelMappingDisclosure = image?.channelCount === 2
     ? 'Two source channels mapped: channel 1 → display R and channel 2 → display G. No Blue source channel is present.'
@@ -759,7 +760,7 @@ export default function Workbench({ userName }: { userName: string }) {
               : 'Stain scores use original 16-bit intensities on a 0–65,535 scale; H&E offsets scale proportionally. These stain transforms differ from Fiji intensity thresholding.'
             : stainScoreDescription(stain, signalChannel)}</p>
 
-          <button type="button" className="primary-button" disabled={!image || loading || !sampleId.trim()} onClick={() => runAnalysis()}>{loading ? 'Working…' : 'Analyze image'} <span>→</span></button>
+          <button type="button" className="primary-button" disabled={!image || loading || !sampleId.trim()} onClick={() => runAnalysis()}>{loading ? 'Working…' : 'Analyze all channels'} <span>→</span></button>
           <p className="validation-note">Research-use workflow. Thresholds and ROI regions must be reviewed before statistical analysis.</p>
         </aside>
 
@@ -793,7 +794,7 @@ export default function Workbench({ userName }: { userName: string }) {
           </div>
 
           <div className={`analysis-message ${error ? 'error' : ''}`} role={error ? 'alert' : 'status'} aria-live={error ? 'assertive' : 'polite'}><i>{error ? '!' : loading ? '…' : analysisRecord ? '✓' : 'i'}</i><span>{error || message}</span></div>
-          <p className="live-preview-note">Live preview uses a smaller image for responsiveness. Click Analyze image for full-resolution measurements and exports. Draw ROIs on the composite view.</p>
+          <p className="live-preview-note">Live preview uses a smaller image for responsiveness. Click Analyze all channels for full-resolution measurements and exports. Draw ROIs on the composite view.</p>
           <details className="image-details"><summary>Image details</summary><div className="stage-caption">
             <span>{image ? `${image.width.toLocaleString()} × ${image.height.toLocaleString()} px` : '—'}</span>
             <span>{image ? `Source: ${image.sourceFormat}` : '—'}</span>
@@ -813,26 +814,7 @@ export default function Workbench({ userName }: { userName: string }) {
           </p>}
         </section>
 
-        <aside className="results-panel">
-          <div className="panel-title"><span>02</span><div><h2>Review result</h2><p>{analysisRecord ? 'Finalized measurement snapshot' : 'Awaiting analysis'}</p></div></div>
-          <div className="primary-metric"><span>Threshold-positive fraction</span><strong>{metrics ? formatDecimal(metrics.positivePercent) : '—'}{metrics && <small>%</small>}</strong><p>of all analyzed pixels in the selected ROI category</p></div>
-          <div className="sample-summary"><span>Sample ID</span><strong>{analysisRecord?.sampleId || sampleId || 'Required'}</strong></div>
-          <dl className="metric-list">
-            <div><dt>Analyzed area (ROI/tissue mask)</dt><dd>{metrics ? `${formatInteger(metrics.analyzedPixels)} px²` : '—'}</dd></div>
-            <div><dt>Positive area (threshold-positive)</dt><dd>{metrics ? `${formatInteger(metrics.positivePixels)} px²` : '—'}</dd></div>
-            <div><dt>Mean score (all analyzed pixels)</dt><dd>{metrics ? formatDecimal(metrics.meanScoreAllAnalyzedPixels) : '—'}</dd></div>
-            <div><dt>Mode score (all analyzed pixels)</dt><dd>{metrics ? metrics.modeScoreAllAnalyzedPixels : '—'}</dd></div>
-            <div><dt>Score range (all analyzed pixels)</dt><dd>{metrics ? `${metrics.minScoreAllAnalyzedPixels} / ${metrics.maxScoreAllAnalyzedPixels}` : '—'}</dd></div>
-            <div><dt>Grid perimeter (positive-mask edges)</dt><dd>{metrics ? `${formatInteger(metrics.gridPerimeterPixelEdges)} pixel edges` : '—'}</dd></div>
-            <div><dt>Score sum (all analyzed pixels)</dt><dd>{metrics ? formatInteger(metrics.scoreSumAllAnalyzedPixels) : '—'}</dd></div>
-            <div><dt>Inclusive score threshold</dt><dd>{analysisRecord ? `${analysisRecord.analysis.minThreshold} — ${analysisRecord.analysis.maxThreshold}` : '—'}</dd></div>
-          </dl>
-          {analysisRecord && analysisRecord.analysis.removeBackground && analysisRecord.analysis.outsideMode === 'report' && analysisRecord.metrics.backgroundPixels !== undefined && analysisRecord.metrics.backgroundPositivePercent !== undefined && <div className="background-report"><span>Outside tissue (reported separately)</span><strong>{formatInteger(analysisRecord.metrics.backgroundPixels)} px²</strong><small>{formatDecimal(analysisRecord.metrics.backgroundPositivePercent)}% threshold-positive</small></div>}
-          <div className={`quality-card ${!analysisRecord ? 'neutral' : ''}`}><i>{analysisRecord ? '✓' : 'i'}</i><div><strong>{analysisRecord ? 'Mask ready for review' : 'No finalized result yet'}</strong><span>{analysisRecord ? `${formatDecimal(analysisRecord.metrics.excludedPercent, 1)}% slide/background excluded` : 'Open an image and run analysis'}</span></div></div>
-          <button type="button" className="export-button" disabled={!analysisRecord} onClick={exportCsv}>Export CSV</button>
-          <button type="button" className="export-button" disabled={!analysisRecord} onClick={exportJson}>Export JSON</button>
-          <p className="calibration-note">Area uses pixels; grid perimeter uses positive-mask pixel edges. No spatial calibration is applied.</p>
-        </aside>
+        <ResultsPanel records={channelRecords} exporting={exporting} onExcel={exportExcel} onCsv={exportCsv} onJson={exportJson} />
       </section>
     </main>
   );

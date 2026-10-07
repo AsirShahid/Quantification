@@ -7,7 +7,7 @@ export default function ChannelTile({ image, channel, ranges, settings, options,
   image: DecodedImage; channel: 'red' | 'green' | 'blue'; ranges: number[];
   settings: ChannelSettings; options: AnalysisOptions; active: boolean; onSelect: () => void;
   view: 'original' | 'overlay' | 'mask';
-  disabled: boolean; markerLabel: string;
+  disabled: boolean;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const available = image.channelCount >= ({ red: 1, green: 2, blue: 3 }[channel]) && image.channelCount > 1;

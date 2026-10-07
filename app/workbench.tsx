@@ -53,15 +53,6 @@ const SIGNAL_CHANNELS: { value: SignalChannel; label: string }[] = [
   { value: 'grayscale', label: 'Grayscale' },
 ];
 
-const STAIN_OPTIONS = [
-  'Sirius Red',
-  'alpha-SMA (IF)',
-  'Vimentin (IF)',
-  'Lotus lectin / LTL (IF)',
-  'DAPI (IF)',
-  'ApoJ / Clusterin (IF)',
-];
-
 const STRUCTURE_OPTIONS = [
   'Whole tissue',
   'Glomeruli',
@@ -201,7 +192,7 @@ export default function Workbench({ userName }: { userName: string }) {
   const profile=stain==='Sirius Red'?'sirius-magenta':'fluorescence-8bit';
 
   const [stainingPanel, setStainingPanel] = useState<StainingPanel>({
-    coStained: 'unspecified', activeId: null,
+    coStained: 'unspecified', activeId: 'primary',
     assignments: [{ id: 'primary', marker: 'Lotus lectin / LTL', channel: 'green', reagent: '' }],
   });
   const [signalChannel, setSignalChannel] = useState<SignalChannel>('green');
@@ -823,12 +814,18 @@ export default function Workbench({ userName }: { userName: string }) {
           <label className="field-label" htmlFor="sample-id">Sample ID <b>required</b></label>
           <input id="sample-id" className="text-input" value={sampleId} onChange={(event) => { setSampleId(event.target.value); invalidateAnalysis(); }} />
 
-          <label className="field-label" htmlFor="stain">Staining</label>
-          <select id="stain" disabled={references.length>0||studyTiles.length>0||!!accepted} className="select-input" value={stain} onChange={(event) => chooseStain(event.target.value)}>{(STAIN_OPTIONS.includes(stain) ? STAIN_OPTIONS : [...STAIN_OPTIONS, stain]).map((option) => <option key={option}>{option}</option>)}</select>
+          <label className="field-label" htmlFor="analysis-method">Analysis method</label>
+          <select id="analysis-method" disabled={loading||references.length>0||studyTiles.length>0||!!accepted} className="select-input" value={siriusWorkflow ? 'sirius' : 'fluorescence'} onChange={(event) => chooseStain(event.target.value === 'sirius' ? 'Sirius Red' : 'Lotus lectin / LTL (IF)')}>
+            <option value="fluorescence">Fluorescence · stain and channel assignments</option>
+            <option value="sirius">Sirius Red · brightfield</option>
+          </select>
 
-          {stain.includes('(IF)') && <><label className="field-label" htmlFor="signal-channel">Positive signal channel</label><select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { setSignalChannel(event.target.value as SignalChannel); setStainingPanel((current) => ({ ...current, activeId: null })); invalidateAnalysis(); }}>{signalChannels.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></>}
-
-          <StainingPanelControls panel={stainingPanel} channelCount={image?.channelCount ?? 3} disabled={loading||references.length>0||studyTiles.length>0||!!accepted} onChange={changeStainingPanel} />
+          {!siriusWorkflow && <>
+            <StainingPanelControls panel={stainingPanel} channelCount={image?.channelCount ?? 3} disabled={loading||references.length>0||studyTiles.length>0||!!accepted} onChange={changeStainingPanel} />
+            <label className="field-label" htmlFor="signal-channel">Channel to edit</label>
+            <select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { const channel=event.target.value as SignalChannel; if(channel==='grayscale'){setSignalChannel(channel);setStainingPanel(current=>({...current,activeId:null}));invalidateAnalysis();}else chooseDisplayChannel(channel); }}>{signalChannels.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select>
+            <p className="validation-note">Edit any channel here or click its image. Choose which channels to measure under Analysis scope.</p>
+          </>}
 
           <section className="study-controls">
             <h3>Groups and samples</h3>
@@ -877,6 +874,7 @@ export default function Workbench({ userName }: { userName: string }) {
               <ChannelControls key={channel} channel={channel} limit={profile==='sirius-magenta' ? 1 : thresholdMax} locked={!!accepted || (profile==='sirius-magenta' && channel!=='red')}
                 settings={channel === signalChannel ? { ...channelSettings[channelSettingsKey(stain, channel)], minimum: minThreshold, maximum: maxThreshold, brightness } : channelSettings[channelSettingsKey(stain, channel)] ?? suggestions[channel]}
                 active={signalChannel === channel} disabled={!image || loading || !availableSignalChannels(image).some((item) => item.value === channel)}
+                markerLabel={stainingPanel.assignments.filter(item => item.channel === channel && item.marker.trim()).map(item => item.marker).join(' + ')}
                 onSelect={() => { if (channel !== 'grayscale') chooseDisplayChannel(channel); }}
                 displayMaximum={ranges[channel === 'grayscale' ? 0 : { red: 0, green: 1, blue: 2 }[channel]]}
                 onDisplayChange={(next) => updateChannelSettings(channel, next, true)}

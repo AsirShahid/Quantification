@@ -105,6 +105,7 @@ function channelMappingHeader(headers, count) {
     || (mapping.method === 'source-order' && mapping.sourceIndices.some((index, position) => index !== position))) {
     throw new Error('Invalid channel mapping metadata.');
   }
+  if(mapping.pixelSizeMicrons !== undefined && (!Array.isArray(mapping.pixelSizeMicrons) || mapping.pixelSizeMicrons.length!==2 || mapping.pixelSizeMicrons.some(v=>!Number.isFinite(v)||v<=0))) throw new Error('Invalid spatial calibration.');
   return mapping;
 }
 
@@ -118,7 +119,7 @@ function channelMappingHeader(headers, count) {
  *   selectedShape: string,
  *   selectedAxes: string[],
  *   channelCount: number,
- *   channelMapping?: {method: string, sourceIndices: number[], sourceNames: string[]},
+ *   channelMapping?: {method: string, sourceIndices: number[], sourceNames: string[], pixelSizeMicrons?: number[]},
  *   planeSelection: Record<string, number | string>,
  *   processing: string,
  *   quantitativeStatus: 'experimental' | 'demonstration',

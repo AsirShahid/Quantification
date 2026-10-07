@@ -6,7 +6,10 @@ export type DecodedImage = {
   height: number;
   rgba: Uint8ClampedArray;
   samples?: Uint8Array | Uint16Array;
+  pixelSizeMicrons?: number[];
   analysisBitDepth?: number;
+  analysisWorkflow?: 'fluorescence-8bit' | 'sirius-magenta';
+  conversionRanges?: {minimum:number;maximum:number}[];
   bitDepth: number;
   sourceFormat: string;
   originalShape: string;
@@ -22,7 +25,7 @@ export type DecodedImage = {
   sourceSha256: string;
 };
 
-export type RoiRect = { x: number; y: number; width: number; height: number };
+export type RoiRect = { x: number; y: number; width: number; height: number; points?: {x:number;y:number}[] };
 
 export type AnalysisOptions = {
   stain: string;
@@ -46,6 +49,11 @@ export type AnalysisResult = {
   max: number;
   perimeter: number;
   rawIntDen: number;
+  positiveMean?: number;
+  positiveStdDev?: number;
+  positiveSum?: number;
+  positiveMin?: number;
+  positiveMax?: number;
   backgroundPixels: number;
   backgroundPositivePixels: number;
   backgroundPositivePercent: number;
@@ -223,6 +231,7 @@ async function decodeWithCompanion(file: File, signal?: AbortSignal): Promise<De
     selectedAxes: metadata.selectedAxes,
     channelCount: metadata.channelCount,
     channelMapping: metadata.channelMapping,
+    pixelSizeMicrons: metadata.channelMapping?.pixelSizeMicrons,
     planeSelection: metadata.planeSelection,
     processing: metadata.processing,
     processingLocation: metadata.processingLocation,
@@ -310,6 +319,7 @@ function validateDimensions(width: number, height: number) {
 }
 
 export function thresholdMaximum(image: DecodedImage | null): number {
+  if(image?.analysisWorkflow === 'sirius-magenta') return 1;
   return image?.samples && image.analysisBitDepth === 16 ? 65535 : 255;
 }
 
@@ -326,7 +336,7 @@ export function analyzeImage(image: DecodedImage, options: AnalysisOptions): Ana
   const tissueMask = new Uint8Array(length);
   const regionMask = new Uint8Array(length);
   const roiMask = makeRoiMask(width, height, options.rois);
-  const useWholeTissue = options.structure === 'Whole tissue';
+  const useWholeTissue = options.structure === 'Whole tissue' && options.rois.length === 0;
   for (let i = 0; i < length; i++) {
     tissueMask[i] = backgroundMask[i] ? 0 : 1;
     regionMask[i] = tissueMask[i] && (useWholeTissue || roiMask[i]) ? 1 : 0;
@@ -334,11 +344,14 @@ export function analyzeImage(image: DecodedImage, options: AnalysisOptions): Ana
 
   const positiveMask = new Uint8Array(length);
   const scoreMax = thresholdMaximum(image);
-  if (!Number.isInteger(options.minThreshold) || !Number.isInteger(options.maxThreshold)
+  const fractional = image.analysisWorkflow === 'sirius-magenta';
+  if ((!fractional && (!Number.isInteger(options.minThreshold) || !Number.isInteger(options.maxThreshold))) || !Number.isFinite(options.minThreshold) || !Number.isFinite(options.maxThreshold)
     || options.minThreshold < 0 || options.maxThreshold > scoreMax || options.minThreshold > options.maxThreshold) {
     throw new Error(`Thresholds must be ordered integers from 0 to ${scoreMax}.`);
   }
-  const histogram = new Uint32Array(scoreMax + 1);
+  const histogramScale = fractional ? 65535 : 1;
+  const histogram = new Uint32Array(scoreMax * histogramScale + 1);
+  let positiveSum=0, positiveSquares=0, positiveMin=Infinity, positiveMax=-Infinity;
   let analyzedPixels = 0;
   let positivePixels = 0;
   let rawIntDen = 0;
@@ -353,17 +366,19 @@ export function analyzeImage(image: DecodedImage, options: AnalysisOptions): Ana
     const r = samples ? samples[q] : rgba[p];
     const g = samples ? samples[q + (image.channelCount === 1 ? 0 : 1)] : rgba[p + 1];
     const b = samples ? (image.channelCount === 2 ? 0 : samples[q + (image.channelCount === 1 ? 0 : 2)]) : rgba[p + 2];
-    const score = stainScore(r, g, b, options.stain, options.signalChannel, scoreMax);
+    const score = fractional ? (Math.max(r,g,b) === 0 ? NaN : Math.fround((Math.max(r,g,b)-g)/Math.max(r,g,b))) : stainScore(r, g, b, options.stain, options.signalChannel, scoreMax);
+    if(!Number.isFinite(score)) {regionMask[i]=0;tissueMask[i]=0;continue;}
     const isPositive = score >= options.minThreshold && score <= options.maxThreshold;
     if (regionMask[i]) {
       analyzedPixels++;
-      histogram[score]++;
+      histogram[Math.round(score * histogramScale)]++;
       rawIntDen += score;
       if (score < min) min = score;
       if (score > max) max = score;
       if (isPositive) {
         positiveMask[i] = 1;
         positivePixels++;
+        positiveSum+=score; positiveSquares+=score*score; positiveMin=Math.min(positiveMin,score);positiveMax=Math.max(positiveMax,score);
       }
     } else if (backgroundMask[i] && isPositive) {
       backgroundPositivePixels++;
@@ -385,7 +400,10 @@ export function analyzeImage(image: DecodedImage, options: AnalysisOptions): Ana
     positivePixels,
     positivePercent,
     mean,
-    mode,
+    mode: mode / histogramScale,
+    positiveMean: positivePixels ? positiveSum/positivePixels : 0,
+    positiveStdDev: positivePixels>1 ? Math.sqrt(Math.max(0,(positiveSquares-positiveSum*positiveSum/positivePixels)/(positivePixels-1))) : 0,
+    positiveSum, positiveMin:positivePixels?positiveMin:0,positiveMax:positivePixels?positiveMax:0,
     min: analyzedPixels ? min : 0,
     max: analyzedPixels ? max : 0,
     perimeter: maskPerimeter(positiveMask, width, height),
@@ -517,7 +535,17 @@ function makeRoiMask(width: number, height: number, rois: RoiRect[]) {
     const y0 = Math.max(0, Math.floor(roi.y));
     const x1 = Math.min(width, Math.ceil(roi.x + roi.width));
     const y1 = Math.min(height, Math.ceil(roi.y + roi.height));
-    for (let y = y0; y < y1; y++) mask.fill(1, y * width + x0, y * width + x1);
+    if(roi.points && roi.points.length>=3) {
+      for(let y=y0;y<y1;y++) {
+        const crossings:number[]=[];
+        for(let i=0,j=roi.points.length-1;i<roi.points.length;j=i++) {
+          const a=roi.points[i],b=roi.points[j],scan=y+0.5;
+          if((a.y>scan)!==(b.y>scan)) crossings.push(a.x+(scan-a.y)*(b.x-a.x)/(b.y-a.y));
+        }
+        crossings.sort((a,b)=>a-b);
+        for(let i=0;i+1<crossings.length;i+=2) {const left=Math.max(0,Math.ceil(crossings[i]-.5)),right=Math.min(width,Math.ceil(crossings[i+1]-.5));if(right>left) mask.fill(1,y*width+left,y*width+right);}
+      }
+    } else for (let y = y0; y < y1; y++) mask.fill(1, y * width + x0, y * width + x1);
   }
   return mask;
 }

@@ -13,8 +13,8 @@ KidneyQuant is a private, self-hostable kidney tissue stain-analysis workbench. 
 - Stain modes for alpha-SMA IF, vimentin IF, lotus lectin/LTL IF, Sirius Red, PAS, and H&E
 - Simultaneous RGB and composite/threshold-overlay previews beside independently scrolling desktop controls
 - Separate minimum, maximum, brightness, and Auto controls for every RGB channel in the left sidebar; image panels stay free of controls for screenshots; fluorescent channel edits persist when switching between named stains
-- Per-channel automatic brightness and sampled Otsu threshold suggestions, with remembered manual overrides for the current image; live previews are downsampled, while Analyze image measures full-resolution native pixels
-- Color-coded RGB channel views and exact numeric threshold entry: 0–255 for 8-bit samples, 0–65,535 for 16-bit samples
+- Per-channel automatic brightness and sampled Otsu threshold suggestions, with remembered manual overrides for the current image; live previews are downsampled, while Analyze all channels measures full-resolution analysis copies
+- Color-coded RGB channel views and numeric threshold entry: 0–255 for converted fluorescence; 0–1 for Sirius Red magenta
 - Background-worker image decoding with cancellable loading
 - Sidebar co-staining status and editable stain/channel assignments (including DAPI, ApoJ/Clusterin, and custom markers); selecting a marker switches its preview and fluorescence measurement channel
 - Antibody/fluorophore notes and stain/channel assignments preserved in CSV/JSON exports
@@ -79,7 +79,7 @@ Configure Nginx Proxy Manager to forward the HTTPS proxy host to `kidneyquant-au
 - JP2-family and ND2 files are sent through the authenticated web route to the private companion. The companion uses request-scoped temporary storage and deletes the upload after decoding.
 - The authenticated ingress and companion are configured for a **512 MiB maximum upload**; browser-local TIFF/JPEG demonstration input has a stricter **128 MiB** limit. Reverse proxies in front of `auth` must use at least the intended companion limit or document the lower effective limit.
 - Decoding fails closed above **8 million pixels per selected plane** or more than **3 retained channels/components**.
-- The experimental pipeline selects the first available ND2 plane. Supported unsigned samples up to 16 bits are preserved for measurement; only the preview is converted to 8-bit. ND2/JP2 native samples use a lossless gzip transport, requiring the updated web and companion services. Sources with 9–16 significant bits use the full unsigned 16-bit threshold range. Signed and floating-point data are not supported.
+- The experimental pipeline selects the first available ND2 plane. Supported unsigned samples up to 16 bits are preserved as the source; a separate 8-bit copy is used for the macro workflow. ND2/JP2 native samples use a lossless gzip transport, requiring the updated web and companion services. Conversion ranges are recorded for every image. Signed and floating-point data are not supported.
 - CSV and JSON exports stay with the user. Phase 1 has no project database or image archive.
 
 ## Bundled demonstration asset
@@ -100,15 +100,19 @@ Structure-specific regions are selected and reviewed by the analyst; they are no
 
 Before publication—and before any use beyond exploratory research—validate thresholds, channel assignments, background tolerance, ROI selection, first-plane behavior, preview scaling, and agreement with the lab's Fiji workflow on a blinded test set. Add pixel calibration when physical units such as µm² or µm are required. Do not use KidneyQuant for diagnosis, treatment decisions, or other clinical purposes.
 
-### Display ranges and detection thresholds
+### Macro workflows and reference tiles
 
-Each sidebar channel has separate display minimum/maximum and detection minimum/maximum. Display windows linearly map native values from black to full channel color (with clipping); brightness is an additional display-only multiplier. Automatic display uses the sampled channel maximum without percentile clipping. To compare with Fiji Brightness/Contrast, copy its display range into the display fields and set brightness to 1.0×. These values are not detection thresholds. Detection counts original intensities inclusively between its lower and upper limits; values above the upper limit are negative.
+Fluorescence uses a separate 8-bit copy before display adjustments. Conversion follows ImageJ TypeConverter short-to-byte scaling: round((sample-min)*256/(max-min+1)), clamped to 0–255. Original 8-bit inputs are preserved. Defaults use each source channel's full-image extrema; enter Fiji's import display ranges in Conversion settings if different. The ND2 importer does not provide an exact Fiji/Bio-Formats display-range guarantee. Validate against matching imported images before treating outputs as interchangeable.
 
-Image view shows a clean composite using exactly the RGB panes’ display windows. Detection overlay and mask apply independently to each RGB pane; the composite shows the selected channel’s detection. Numeric edits apply on Enter or blur; Escape cancels. Preview sampling, channel mapping, plane selection, and background/ROI exclusions can affect comparison with Fiji; exact specimen validation requires the original image and matching settings.
+Sirius Red computes (max(R,G,B)-G)/max(R,G,B) on the RGB analysis copy, with fractional thresholds 0–1; undefined all-black scores are excluded. This is a separate score, not a red channel threshold. Its exported magenta view and RGB composite accompany measurements.
 
-### Multi-channel results
+Open a folder for one sample. Save reviewed reference tiles (typically 10), keeping a fixed maximum per channel. The app shows individual minima, their arithmetic mean, and the applied value (nearest integer for 8-bit, four decimals for magenta). Accepting locks thresholds. Full-image folder quantification is sequential and uses those thresholds on all tiles, including reference tiles. Failed files are listed; stopping retains completed tiles. For glomeruli or manual tissue crops, draw freehand or rectangular regions on each tile and Analyze all channels to save that tile. Outlines are never reused on other images. Overlapping regions form a union, and percentages use that selected region after any explicit background exclusion.
 
-Analyze all channels measures every available source channel at full resolution using its saved detection thresholds and the same ROI/background rules. Each record contains its own marker assignment, threshold limits, source provenance and timestamp. Results scroll independently in the right panel on desktop, with export buttons fixed below them; smaller screens place results in normal document flow. Excel export creates one workbook with Red, Green and Blue tabs (or only the available channels for monochrome/two-channel sources). Numeric metrics remain numeric, and each sheet includes settings, units/definitions and provenance. The Excel code loads only when exporting. CSV exports the selected channel; JSON exports all finalized channels. Detection/ROI changes invalidate the whole batch; display-only changes and channel pane selection preserve it.
+Normal-color images remain the default. Show counted pixels is optional; there is no Mask tab or automatic switch to detection. Screenshots contain clean images plus ROI outlines, and exports include separate detection screenshots. Display settings do not affect the already-converted analysis copy.
+
+Finish sample / start next preserves completed results while clearing the next sample's references. Excel uses staining tabs, horizontal sample column groups and vertically stacked tiles with baseline/positive rows and neighboring images, plus Reference thresholds and Provenance tabs. ND2 calibrated pixel dimensions, when available, are used for Excel Area and IntDen; otherwise units are explicitly pixels. RawIntDen remains the uncalibrated sum. JSON/CSV describe the current analysis; Excel contains collected samples. Results live in the browser session: export before closing or refreshing.
+
+Positive mean, sample standard deviation, min, max and raw integrated intensity use only counted pixels. Zero-positive statistics are recorded as zero. All-region statistics are retained separately. Four-neighbor mask perimeter is not Fiji's ROI perimeter. ND2 calibration, conversion ranges, ROIs, stain assignments and per-tile thresholds are recorded in provenance. The app does not infer glomeruli or automatically validate threshold selection.
 
 ### ND2 source channel colors
 

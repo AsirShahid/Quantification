@@ -311,6 +311,12 @@ def decode_source(path: Path, suffix: str, render_preview: bool = True) -> Decod
             selected = np.asarray(lazy[indexer].compute(scheduler="synchronous"))
             plane, _ = select_first_plane(selected, retained_axes)
             plane, channel_mapping = map_nd2_channels(plane, nd_file.metadata)
+            channels = getattr(nd_file.metadata, "channels", None) or []
+            volume = getattr(channels[0], "volume", None) if channels else None
+            calibrated = getattr(volume, "axesCalibrated", ())
+            calibration = getattr(volume, "axesCalibration", ())
+            if len(calibrated) >= 2 and all(calibrated[:2]) and len(calibration) >= 2 and all(np.isfinite(v) and v > 0 for v in calibration[:2]):
+                channel_mapping["pixelSizeMicrons"] = [float(v) for v in calibration[:2]]
             significant_bits = int(nd_file.attributes.bitsPerComponentSignificant)
         selected_axes = ("Y", "X") if plane.ndim == 2 else ("Y", "X", next(axis for axis in retained_axes if axis not in {"Y", "X"}))
         source_format = "ND2"

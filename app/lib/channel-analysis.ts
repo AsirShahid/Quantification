@@ -5,7 +5,7 @@ import { buildAnalysisRecord, type AnalysisSettingsSnapshot } from './analysis-r
 export function analyzeChannels(image: DecodedImage, settings: AnalysisSettingsSnapshot,
   saved: Record<string, ChannelSettings>, provenance: { analyst: string; sampleId: string; sourceName: string; sourceSize: number; sourceLastModified: number },
 ) {
-  const channels = image.channelCount === 1 ? ['grayscale'] as const
+  const channels = image.analysisWorkflow === 'sirius-magenta' ? ['red'] as const : image.channelCount === 1 ? ['grayscale'] as const
     : image.channelCount === 2 ? ['red', 'green'] as const : ['red', 'green', 'blue'] as const;
   const preview = samplePreview(image);
   const analyzedAt = new Date().toISOString();

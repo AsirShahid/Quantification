@@ -32,6 +32,7 @@ export function components(image: DecodedImage, i: number): [number, number, num
 }
 
 export function automaticSettings(image: DecodedImage, stain: string, channel: Channel): ChannelSettings {
+  if(image.analysisWorkflow === 'sirius-magenta') return {minimum:0.35,maximum:1,brightness:1};
   const maximum = thresholdMaximum(image);
   const histogram = new Uint32Array(maximum + 1);
   let sum = 0;
@@ -55,7 +56,7 @@ export function automaticSettings(image: DecodedImage, stain: string, channel: C
 }
 
 export function displayRanges(image: DecodedImage): [number, number, number] {
-  const max = thresholdMaximum(image);
+  const max = image.analysisBitDepth === 16 ? 65535 : 255;
   const histograms = [new Uint32Array(max + 1), new Uint32Array(max + 1), new Uint32Array(max + 1)];
   const count = image.width * image.height;
   for (let i = 0; i < count; i++) components(image, i).forEach((value, channel) => histograms[channel][value]++);
@@ -69,16 +70,17 @@ export function displayRanges(image: DecodedImage): [number, number, number] {
   }) as [number, number, number];
 }
 
-export function renderPreview(image: DecodedImage, channel: Channel | 'composite', ranges: number[], brightness: number[], options: AnalysisOptions, view: 'original' | 'overlay' | 'mask', displayMinimum: number[] = [0, 0, 0]) {
+export function renderPreview(image: DecodedImage, channel: Channel | 'composite' | 'magenta', ranges: number[], brightness: number[], options: AnalysisOptions, view: 'original' | 'overlay' | 'mask', displayMinimum: number[] = [0, 0, 0]) {
   const pixels = new Uint8ClampedArray(image.rgba.length);
   let result = null;
   if (view !== 'original') {
     try { result = analyzeImage(image, options); } catch { /* Empty preview ROI: show the source. Full analysis reports the error. */ }
   }
-  const component = { red: 0, green: 1, blue: 2, grayscale: -1, composite: -1 }[channel];
+  const component = { red: 0, green: 1, blue: 2, grayscale: -1, composite: -1, magenta: -2 }[channel];
   for (let i = 0; i < image.width * image.height; i++) {
     const values = components(image, i);
     for (let c = 0; c < 3; c++) pixels[i * 4 + c] = component < 0 || component === c ? Math.round(Math.max(0, Math.min(1, (values[c] - displayMinimum[c]) / Math.max(1, ranges[c] - displayMinimum[c]))) * 255 * brightness[c]) : 0;
+    if(channel==='magenta') {const high=Math.max(...values);const value=high ? Math.round((high-values[1])/high*255):0;pixels[i*4]=pixels[i*4+2]=value;pixels[i*4+1]=0;}
     pixels[i * 4 + 3] = 255;
     if (result && view === 'mask') {
       const value = result.positiveMask[i] ? 255 : 0;

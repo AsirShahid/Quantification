@@ -74,3 +74,13 @@ test('display windows map black, midtone and saturation identically in RGB panes
   assert.deepEqual([mask[0],mask[4],mask[8],mask[12]], [0,255,255,0]);
   assert.deepEqual(mask, renderPreview(image, 'red', [65535,65535,65535], [.2,.2,.2], { ...options, minThreshold: 10, maxThreshold: 200 }, 'mask'));
 });
+
+test('expanded brightness changes appearance without changing source measurements, including magenta',()=>{
+ const source={...image,width:1,height:1,analysisBitDepth:8,analysisWorkflow:'sirius-magenta' as const,samples:new Uint8Array([200,100,50]),rgba:new Uint8ClampedArray([200,100,50,255])};
+ const settings={...options,stain:'Sirius Red',minThreshold:.35,maxThreshold:1};
+ const original=analyzeImage(source,settings);
+ assert.equal(renderPreview(source,'magenta',[255,255,255],[1,1,1],settings,'original')[0],128);
+ assert.equal(renderPreview(source,'magenta',[255,255,255],[.01,.01,.01],settings,'original')[0],1);
+ assert.equal(renderPreview(source,'magenta',[255,255,255],[20,20,20],settings,'original')[0],255);
+ assert.deepEqual(analyzeImage(source,settings),original);assert.deepEqual([...source.samples],[200,100,50]);
+});

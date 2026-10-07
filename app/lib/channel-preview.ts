@@ -80,7 +80,7 @@ export function renderPreview(image: DecodedImage, channel: Channel | 'composite
   for (let i = 0; i < image.width * image.height; i++) {
     const values = components(image, i);
     for (let c = 0; c < 3; c++) pixels[i * 4 + c] = component < 0 || component === c ? Math.round(Math.max(0, Math.min(1, (values[c] - displayMinimum[c]) / Math.max(1, ranges[c] - displayMinimum[c]))) * 255 * brightness[c]) : 0;
-    if(channel==='magenta') {const high=Math.max(...values);const value=high ? Math.round((high-values[1])/high*255):0;pixels[i*4]=pixels[i*4+2]=value;pixels[i*4+1]=0;}
+    if(channel==='magenta') {const high=Math.max(...values);const value=high ? Math.round((high-values[1])/high*255*brightness[0]):0;pixels[i*4]=pixels[i*4+2]=value;pixels[i*4+1]=0;}
     pixels[i * 4 + 3] = 255;
     if (result && view === 'mask') {
       const value = result.positiveMask[i] ? 255 : 0;

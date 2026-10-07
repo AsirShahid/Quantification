@@ -52,9 +52,13 @@ export default function ChannelControls({ channel, settings, limit, active, disa
         <input aria-label={`${channel} maximum threshold slider`} type="range" min="0" max={limit} step={limit===1?0.001:1} value={settings.maximum} onChange={(event) => maximum(event.target.value)} />
       </label>
     </fieldset>
-    <label className="channel-brightness-label" htmlFor={`${channel}-brightness`}>Brightness <span>{settings.brightness.toFixed(1)}×</span>
-      <input id={`${channel}-brightness`} aria-label={`${channel} brightness`} type="range" min="0.2" max="3" step="0.1" value={settings.brightness} onChange={(event) => onDisplayChange({ ...settings, brightness: Number(event.target.value) })} />
-    </label>
+    <div className="channel-brightness-label"><label htmlFor={`${channel}-brightness`}>Brightness <span>{settings.brightness.toFixed(2)}×</span></label>
+      <div className="channel-brightness-inputs">
+        <NumberField id={`${channel}-brightness-value`} label={`${channel} brightness multiplier`} min={0.01} max={20} step={0.01} value={settings.brightness}
+          onCommit={value=>onDisplayChange({...settings,brightness:Math.max(0.01,Math.min(20,Math.round(Number(value)*100)/100))})} />
+        <input id={`${channel}-brightness`} aria-label={`${channel} brightness`} type="range" min="0.01" max="20" step="0.01" value={settings.brightness} onChange={event=>onDisplayChange({...settings,brightness:Number(event.target.value)})} />
+      </div>
+    </div>
     <div className="channel-settings-footer"><span>Range: 0–{limit}</span><button type="button" disabled={locked} onClick={onAuto} aria-label={`Auto ${channel} settings`}>Auto</button></div>
   </fieldset>;
 }

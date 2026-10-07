@@ -1,9 +1,12 @@
+import { nativePixels } from './native-pixels.ts';
 import { companionPixelDimensions, companionRequired, parseCompanionError, parseCompanionMetadata } from './decode-metadata.mjs';
 
 export type DecodedImage = {
   width: number;
   height: number;
   rgba: Uint8ClampedArray;
+  samples?: Uint8Array | Uint16Array;
+  analysisBitDepth?: number;
   bitDepth: number;
   sourceFormat: string;
   originalShape: string;
@@ -142,7 +145,7 @@ export function tiffRgbaFromDecoded(
   return rgba;
 }
 
-export async function decodeMicroscopyFile(file: File): Promise<DecodedImage> {
+export async function decodeMicroscopyFile(file: File, signal?: AbortSignal): Promise<DecodedImage> {
   const extension = file.name.toLowerCase().split('.').pop() ?? '';
   const requiresCompanion = companionRequired(file.name);
   const fileLimit = requiresCompanion ? MAX_COMPANION_FILE_BYTES : MAX_BROWSER_LOCAL_FILE_BYTES;
@@ -151,7 +154,7 @@ export async function decodeMicroscopyFile(file: File): Promise<DecodedImage> {
     throw new Error(`The file exceeds the ${limitMb} MB ${requiresCompanion ? 'companion' : 'browser-local'} safety limit.`);
   }
   if (requiresCompanion) {
-    return decodeWithCompanion(file);
+    return decodeWithCompanion(file, signal);
   }
 
   const browserLocalSupported = extension === 'tif' || extension === 'tiff' || file.name === 'synthetic-demo-tile.jpg';
@@ -164,14 +167,16 @@ export async function decodeMicroscopyFile(file: File): Promise<DecodedImage> {
   return decodeBrowserImage(file, sourceSha256);
 }
 
-async function decodeWithCompanion(file: File): Promise<DecodedImage> {
+async function decodeWithCompanion(file: File, signal?: AbortSignal): Promise<DecodedImage> {
   const extension = file.name.toLowerCase().split('.').pop() ?? '';
   let response: Response;
   try {
     response = await fetch('/api/decode', {
       method: 'POST',
+      signal,
       headers: {
         'content-type': 'application/octet-stream',
+        'accept': 'application/vnd.kidneyquant.samples+gzip',
         'x-kidneyquant-file-extension': `.${extension}`,
       },
       body: file,
@@ -187,11 +192,25 @@ async function decodeWithCompanion(file: File): Promise<DecodedImage> {
     );
   }
   const metadata = parseCompanionMetadata(response.headers);
-  const png = await response.blob();
-  const decoded = await decodeBrowserImage(new File([png], `${file.name}.png`, { type: 'image/png' }), metadata.sourceSha256);
   const expected = companionPixelDimensions(metadata);
-  if (decoded.width !== expected.width || decoded.height !== expected.height) {
-    throw new Error(`Companion PNG dimensions ${decoded.width}x${decoded.height} contradict selected metadata ${expected.width}x${expected.height}.`);
+  validateDimensions(expected.width, expected.height);
+  let decoded: Pick<DecodedImage, 'width' | 'height' | 'rgba' | 'samples' | 'analysisBitDepth'>;
+  if (response.headers.get('content-type')?.split(';')[0] === 'application/vnd.kidneyquant.samples+gzip') {
+    if (!response.body || metadata.processing !== 'native-integer-samples'
+      || metadata.selectedAxes[0] !== 'Y' || metadata.selectedAxes[1] !== 'X') {
+      throw new Error('The companion returned invalid native pixel metadata.');
+    }
+    const raw = await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
+    decoded = { ...expected, ...nativePixels(raw, expected.width, expected.height, metadata.channelCount, metadata.originalBitDepth) };
+  } else {
+    if (metadata.originalBitDepth !== 8) {
+      throw new Error('Update the private image companion to preserve native intensities for high-bit-depth thresholding.');
+    }
+    const png = await response.blob();
+    decoded = await decodeBrowserImage(new File([png], `${file.name}.png`, { type: 'image/png' }), metadata.sourceSha256);
+    if (decoded.width !== expected.width || decoded.height !== expected.height) {
+      throw new Error('Companion PNG dimensions contradict selected metadata.');
+    }
   }
   return {
     ...decoded,
@@ -222,12 +241,14 @@ async function decodeTiff(buffer: ArrayBuffer, sourceSha256: string): Promise<De
   const { bitDepth, channelCount } = tiffMetadata(ifd);
 
   UTIF.decodeImage(buffer, ifd);
-  const rgba = tiffRgbaFromDecoded(ifd, width, height, bitDepth, channelCount);
+  const data = ifd.data;
+  if (!(data instanceof Uint8Array)) throw new Error('The TIFF decoder did not return unsigned sample bytes.');
+  const native = nativePixels(data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer, width, height, channelCount, bitDepth);
   const shape = channelCount > 1 ? `${height}x${width}x${channelCount}` : `${height}x${width}`;
   return {
     width,
     height,
-    rgba,
+    ...native,
     bitDepth,
     sourceFormat: 'TIFF',
     originalShape: shape,
@@ -236,7 +257,7 @@ async function decodeTiff(buffer: ArrayBuffer, sourceSha256: string): Promise<De
     selectedAxes: channelCount > 1 ? ['Y', 'X', 'S'] : ['Y', 'X'],
     channelCount,
     planeSelection: {},
-    processing: bitDepth === 8 ? 'native-8bit' : 'browser-linear-16bit-to-8bit',
+    processing: bitDepth === 8 ? 'native-8bit' : 'native-integer-samples',
     processingLocation: 'browser',
     quantitativeStatus: 'experimental',
     sourceSha256,
@@ -246,10 +267,12 @@ async function decodeTiff(buffer: ArrayBuffer, sourceSha256: string): Promise<De
 async function decodeBrowserImage(file: File, knownSourceSha256?: string): Promise<DecodedImage> {
   const bitmap = await createImageBitmap(file);
   validateDimensions(bitmap.width, bitmap.height);
-  const canvas = document.createElement('canvas');
+  const canvas = typeof OffscreenCanvas !== 'undefined'
+    ? new OffscreenCanvas(bitmap.width, bitmap.height)
+    : document.createElement('canvas');
   canvas.width = bitmap.width;
   canvas.height = bitmap.height;
-  const context = canvas.getContext('2d', { willReadFrequently: true });
+  const context = canvas.getContext('2d', { willReadFrequently: true }) as CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D | null;
   if (!context) throw new Error('The browser could not create an image canvas.');
   context.drawImage(bitmap, 0, 0);
   const rgba = context.getImageData(0, 0, bitmap.width, bitmap.height).data;
@@ -284,6 +307,10 @@ function validateDimensions(width: number, height: number) {
   }
 }
 
+export function thresholdMaximum(image: DecodedImage | null): number {
+  return image?.samples && image.analysisBitDepth === 16 ? 65535 : 255;
+}
+
 export function analyzeImage(image: DecodedImage, options: AnalysisOptions): AnalysisResult {
   const { width, height, rgba } = image;
   const length = width * height;
@@ -304,17 +331,27 @@ export function analyzeImage(image: DecodedImage, options: AnalysisOptions): Ana
   }
 
   const positiveMask = new Uint8Array(length);
-  const histogram = new Uint32Array(256);
+  const scoreMax = thresholdMaximum(image);
+  if (!Number.isInteger(options.minThreshold) || !Number.isInteger(options.maxThreshold)
+    || options.minThreshold < 0 || options.maxThreshold > scoreMax || options.minThreshold > options.maxThreshold) {
+    throw new Error(`Thresholds must be ordered integers from 0 to ${scoreMax}.`);
+  }
+  const histogram = new Uint32Array(scoreMax + 1);
   let analyzedPixels = 0;
   let positivePixels = 0;
   let rawIntDen = 0;
-  let min = 255;
+  let min = scoreMax;
   let max = 0;
   let backgroundPositivePixels = 0;
 
   for (let i = 0; i < length; i++) {
     const p = i * 4;
-    const score = stainScore(rgba[p], rgba[p + 1], rgba[p + 2], options.stain, options.signalChannel);
+    const samples = image.samples;
+    const q = i * image.channelCount;
+    const r = samples ? samples[q] : rgba[p];
+    const g = samples ? samples[q + (image.channelCount === 1 ? 0 : 1)] : rgba[p + 1];
+    const b = samples ? (image.channelCount === 2 ? 0 : samples[q + (image.channelCount === 1 ? 0 : 2)]) : rgba[p + 2];
+    const score = stainScore(r, g, b, options.stain, options.signalChannel, scoreMax);
     const isPositive = score >= options.minThreshold && score <= options.maxThreshold;
     if (regionMask[i]) {
       analyzedPixels++;
@@ -368,11 +405,13 @@ function stainScore(
   b: number,
   stain: string,
   signalChannel: AnalysisOptions['signalChannel'],
+  maximum = 255,
 ): number {
-  if (stain === 'Sirius Red') return clamp(Math.round(r - (g + b) / 2));
-  if (stain === 'PAS') return clamp(Math.round((r + b) / 2 - g));
-  if (stain === 'H&E — hematoxylin') return clamp(Math.round(b - (r + g) / 2 + 64));
-  if (stain === 'H&E — eosin') return clamp(Math.round((r + b) / 2 - g + 64));
+  const scoreClamp = (value: number) => Math.max(0, Math.min(maximum, value));
+  if (stain === 'Sirius Red') return scoreClamp(Math.round(r - (g + b) / 2));
+  if (stain === 'PAS') return scoreClamp(Math.round((r + b) / 2 - g));
+  if (stain === 'H&E — hematoxylin') return scoreClamp(Math.round(b - (r + g) / 2 + 64 * maximum / 255));
+  if (stain === 'H&E — eosin') return scoreClamp(Math.round((r + b) / 2 - g + 64 * maximum / 255));
   if (stain.includes('(IF)')) {
     if (signalChannel === 'red') return r;
     if (signalChannel === 'green') return g;

@@ -51,11 +51,14 @@ def raw_request(
     extension: str | None = ".jp2",
     content_length: int | str | None = None,
     receive_started: threading.Event | None = None,
+    accept: str | None = None,
 ) -> Request:
     remaining = list(chunks)
     headers: list[tuple[bytes, bytes]] = []
     if extension is not None:
         headers.append((b"x-kidneyquant-file-extension", extension.encode("ascii")))
+    if accept is not None:
+        headers.append((b"accept", accept.encode("ascii")))
     if content_length is None:
         content_length = sum(len(chunk) for chunk in chunks)
     if content_length is not False:
@@ -474,3 +477,50 @@ class DecodeEndpointTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NativeSampleTests(unittest.IsolatedAsyncioTestCase):
+    def test_native_transport_preserves_sixteen_bit_neighbors_and_endianness(self):
+        import gzip
+        import tifffile
+        from main import decode_samples
+        values = np.array([[0, 1000, 1001, 65535]], dtype=np.uint16)
+        with TemporaryDirectory() as directory:
+            for byteorder in ("<", ">"):
+                path = Path(directory) / "native.tif"
+                tifffile.imwrite(path, values, byteorder=byteorder, photometric="minisblack")
+                decoded, body = decode_samples(path, ".tif")
+                restored = np.frombuffer(gzip.decompress(body), dtype="<u2").reshape(values.shape)
+                np.testing.assert_array_equal(restored, values)
+                self.assertEqual(decoded.significant_bits, 16)
+                self.assertEqual(decoded.display.size, 0)
+
+    async def test_endpoint_negotiates_native_transport_and_preserves_metadata(self):
+        import gzip
+        import tifffile
+        content = BytesIO()
+        values = np.array([[1000, 1001, 65535]], dtype=np.uint16)
+        tifffile.imwrite(content, values, photometric="minisblack")
+        body = content.getvalue()
+        response = await decode(raw_request(
+            [body],
+            extension=".tif",
+            accept="application/vnd.kidneyquant.samples+gzip",
+        ))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "application/vnd.kidneyquant.samples+gzip")
+        self.assertEqual(response.headers["x-kidneyquant-processing"], "native-integer-samples")
+        self.assertEqual(response.headers["x-kidneyquant-source-sha256"], hashlib.sha256(body).hexdigest())
+        np.testing.assert_array_equal(np.frombuffer(gzip.decompress(response.body), dtype="<u2"), values.ravel())
+
+    async def test_endpoint_defaults_to_the_legacy_png_preview(self):
+        import tifffile
+        content = BytesIO()
+        values = np.array([[1000, 1001, 65535]], dtype=np.uint16)
+        tifffile.imwrite(content, values, photometric="minisblack")
+        response = await decode(raw_request([content.getvalue()], extension=".tif"))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers["content-type"], "image/png")
+        self.assertEqual(response.headers["x-kidneyquant-processing"], "linear-16bit-to-8bit")
+        with Image.open(BytesIO(response.body)) as decoded_png:
+            self.assertEqual(decoded_png.size, (3, 1))

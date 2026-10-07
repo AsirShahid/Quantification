@@ -12,7 +12,7 @@ import {
 } from 'react';
 import {
   analyzeImage,
-  decodeMicroscopyFile,
+  thresholdMaximum,
   type AnalysisResult,
   type DecodedImage,
   type RoiRect,
@@ -24,6 +24,10 @@ import {
   type AnalysisSettingsSnapshot,
 } from './lib/analysis-record';
 import { applyChannelViewInPlace, prepareMicroscopyFiles } from './lib/viewer-utils.mjs';
+
+import { loadMicroscopyFile } from './lib/image-loader';
+import StainingPanelControls from './staining-panel';
+import { activeAssignment, type StainingPanel } from './lib/stain-channels';
 
 type ViewMode = 'overlay' | 'original' | 'mask';
 type OutsideMode = 'exclude' | 'report';
@@ -44,6 +48,8 @@ const STAIN_OPTIONS = [
   'alpha-SMA (IF)',
   'Vimentin (IF)',
   'Lotus lectin / LTL (IF)',
+  'DAPI (IF)',
+  'ApoJ / Clusterin (IF)',
   'PAS',
   'H&E — hematoxylin',
   'H&E — eosin',
@@ -73,6 +79,7 @@ const DEFAULT_CHANNELS: Record<string, SignalChannel> = {
   'alpha-SMA (IF)': 'red',
   'Vimentin (IF)': 'red',
   'Lotus lectin / LTL (IF)': 'green',
+  'DAPI (IF)': 'blue',
 };
 
 function stripExtension(name: string) {
@@ -178,6 +185,8 @@ export default function Workbench({ userName }: { userName: string }) {
   const draftRoiRef = useRef<RoiRect | null>(null);
   const draftFrameRef = useRef<number | null>(null);
   const openRequestId = useRef(0);
+  const thresholdMaximumRef = useRef(255);
+  const openController = useRef<AbortController | null>(null);
   const analysisRequestId = useRef(0);
   const [sampleId, setSampleId] = useState('synthetic-demo-tile');
   const [sourceName, setSourceName] = useState(SYNTHETIC_DEMO_NAME);
@@ -187,6 +196,10 @@ export default function Workbench({ userName }: { userName: string }) {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [analysisRecord, setAnalysisRecord] = useState<AnalysisRecord | null>(null);
   const [stain, setStain] = useState('Sirius Red');
+  const [stainingPanel, setStainingPanel] = useState<StainingPanel>({
+    coStained: 'unspecified', activeId: null,
+    assignments: [{ id: 'primary', marker: '', channel: 'red', reagent: '' }],
+  });
   const [signalChannel, setSignalChannel] = useState<SignalChannel>('red');
   const [structure, setStructure] = useState('Whole tissue');
   const [minThreshold, setMinThreshold] = useState(6);
@@ -204,6 +217,7 @@ export default function Workbench({ userName }: { userName: string }) {
   const [displayChannel, setDisplayChannel] = useState<DisplayChannel>('composite');
   const [message, setMessage] = useState('Loading the bundled procedurally generated synthetic demo tile…');
   const [error, setError] = useState('');
+  const [thresholdMax, setThresholdMax] = useState(255);
 
   const initials = useMemo(
     () =>
@@ -229,6 +243,10 @@ export default function Workbench({ userName }: { userName: string }) {
   const runAnalysis = useCallback(
     (decoded = image) => {
       if (!decoded) return;
+      if (stainingPanel.activeId && !activeAssignment(stainingPanel, decoded.channelCount)) {
+        setError('Choose a stain name and an available image channel before analysis.');
+        return;
+      }
       if (structure !== 'Whole tissue' && rois.length === 0) {
         setResult(null);
         setAnalysisRecord(null);
@@ -236,6 +254,7 @@ export default function Workbench({ userName }: { userName: string }) {
         return;
       }
       const settings: AnalysisSettingsSnapshot = {
+        stainingPanel,
         stain,
         signalChannel,
         minThreshold,
@@ -294,13 +313,16 @@ export default function Workbench({ userName }: { userName: string }) {
       });
     },
     [
-      image, stain, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
+      image, stain, stainingPanel, signalChannel, minThreshold, maxThreshold, removeBackground, backgroundTolerance,
       outsideMode, structure, rois, userName, sampleId, sourceName, sourceSize, sourceLastModified,
     ],
   );
 
   const openFile = useCallback(async (file: File, demonstration = false, displayName = file.name) => {
     const requestId = ++openRequestId.current;
+    openController.current?.abort();
+    const controller = new AbortController();
+    openController.current = controller;
     analysisRequestId.current++;
     setLoading(true);
     setError('');
@@ -308,13 +330,20 @@ export default function Workbench({ userName }: { userName: string }) {
     setAnalysisRecord(null);
     setImage(null);
     setDisplayChannel('composite');
+    setStainingPanel((current) => ({ ...current, activeId: null }));
     setSourceName(displayName);
     setSourceSize(file.size);
     setSourceLastModified(file.lastModified);
     setMessage(`Opening ${file.name}…`);
     try {
-      const decoded = await decodeMicroscopyFile(file);
-      if (requestId !== openRequestId.current) return;
+      const decoded = await loadMicroscopyFile(file, controller.signal);
+      if (controller.signal.aborted || requestId !== openRequestId.current) return;
+      const nextMaximum = thresholdMaximum(decoded);
+      const scale = nextMaximum / thresholdMaximumRef.current;
+      setMinThreshold((current) => Math.round(current * scale));
+      setMaxThreshold((current) => Math.round(current * scale));
+      thresholdMaximumRef.current = nextMaximum;
+      setThresholdMax(nextMaximum);
       setImage(decoded);
       setSignalChannel((current) => {
         if (decoded.channelCount <= 1) return 'grayscale';
@@ -328,12 +357,12 @@ export default function Workbench({ userName }: { userName: string }) {
         setMessage('Image ready. Adjust the settings, then analyze.');
       }
     } catch (openError) {
-      if (requestId === openRequestId.current) {
+      if (!controller.signal.aborted && requestId === openRequestId.current) {
         setError(`Could not decode ${displayName}: ${errorMessage(openError, 'The file could not be opened.')}`);
         setMessage('Choose another supported file or verify that the private image companion is healthy.');
       }
     } finally {
-      if (requestId === openRequestId.current) setLoading(false);
+      if (!controller.signal.aborted && requestId === openRequestId.current) setLoading(false);
     }
   }, []);
 
@@ -345,11 +374,11 @@ export default function Workbench({ userName }: { userName: string }) {
         return response.blob();
       })
       .then((blob) => {
-        if (!active) return;
+        if (!active || openRequestId.current > 0) return;
         return openFile(new File([blob], SYNTHETIC_DEMO_NAME, { type: 'image/jpeg', lastModified: 0 }), true);
       })
       .catch((referenceError) => {
-        if (active) {
+        if (active && openRequestId.current === 0) {
           setLoading(false);
           setError(`The bundled reference image could not be loaded: ${errorMessage(referenceError, 'Unknown decode error')}`);
         }
@@ -427,6 +456,7 @@ export default function Workbench({ userName }: { userName: string }) {
   }, [rois, paintCanvas]);
 
   useEffect(() => () => {
+    openController.current?.abort();
     if (draftFrameRef.current !== null) window.cancelAnimationFrame(draftFrameRef.current);
   }, []);
 
@@ -575,9 +605,23 @@ export default function Workbench({ userName }: { userName: string }) {
   const chooseStain = (value: string) => {
     const [minimum, maximum] = DEFAULT_THRESHOLDS[value] ?? [0, 255];
     setStain(value);
-    setSignalChannel(DEFAULT_CHANNELS[value] ?? 'red');
-    setMinThreshold(minimum);
-    setMaxThreshold(maximum);
+    const requested = DEFAULT_CHANNELS[value] ?? 'red';
+    setSignalChannel(availableSignalChannels(image).some(({ value }) => value === requested) ? requested : image?.channelCount === 1 ? 'grayscale' : 'red');
+    setStainingPanel((current) => ({ ...current, activeId: null }));
+    setMinThreshold(Math.round(minimum * thresholdMax / 255));
+    setMaxThreshold(Math.round(maximum * thresholdMax / 255));
+    invalidateAnalysis();
+  };
+
+  const changeStainingPanel = (next: StainingPanel) => {
+    setStainingPanel(next);
+    const selected = activeAssignment(next, image?.channelCount ?? 3);
+    if (selected) {
+      setStain(`${selected.marker.trim()} (IF)`);
+      setSignalChannel(selected.channel);
+      setDisplayChannel(selected.channel === 'grayscale' ? 'composite' : selected.channel);
+      setView('original');
+    }
     invalidateAnalysis();
   };
 
@@ -645,9 +689,11 @@ export default function Workbench({ userName }: { userName: string }) {
           <input id="sample-id" className="text-input" value={sampleId} onChange={(event) => { setSampleId(event.target.value); invalidateAnalysis(); }} />
 
           <label className="field-label" htmlFor="stain">Staining</label>
-          <select id="stain" className="select-input" value={stain} onChange={(event) => chooseStain(event.target.value)}>{STAIN_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
+          <select id="stain" className="select-input" value={stain} onChange={(event) => chooseStain(event.target.value)}>{(STAIN_OPTIONS.includes(stain) ? STAIN_OPTIONS : [...STAIN_OPTIONS, stain]).map((option) => <option key={option}>{option}</option>)}</select>
 
-          {stain.includes('(IF)') && <><label className="field-label" htmlFor="signal-channel">Positive signal channel</label><select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { setSignalChannel(event.target.value as SignalChannel); invalidateAnalysis(); }}>{signalChannels.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></>}
+          {stain.includes('(IF)') && <><label className="field-label" htmlFor="signal-channel">Positive signal channel</label><select id="signal-channel" className="select-input" value={signalChannel} onChange={(event) => { setSignalChannel(event.target.value as SignalChannel); setStainingPanel((current) => ({ ...current, activeId: null })); invalidateAnalysis(); }}>{signalChannels.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}</select></>}
+
+          <StainingPanelControls panel={stainingPanel} channelCount={image?.channelCount ?? 3} disabled={loading} onChange={changeStainingPanel} />
 
           <label className="field-label" htmlFor="roi-category">ROI category</label>
           <select id="roi-category" className="select-input" value={structure} onChange={(event) => chooseStructure(event.target.value)}>{STRUCTURE_OPTIONS.map((option) => <option key={option}>{option}</option>)}</select>
@@ -682,8 +728,21 @@ export default function Workbench({ userName }: { userName: string }) {
 
           {removeBackground && <><label className="field-label compact" htmlFor="outside-mode">Outside-tissue handling</label><select id="outside-mode" className="select-input" value={outsideMode} onChange={(event) => { setOutsideMode(event.target.value as OutsideMode); invalidateAnalysis(); }}><option value="exclude">Exclude from calculations</option><option value="report">Exclude and report separately</option></select><label className="field-label compact" htmlFor="background-tolerance">Background tolerance <span>{backgroundTolerance}</span></label><input id="background-tolerance" className="single-range" type="range" min="4" max="60" value={backgroundTolerance} onChange={(event) => { setBackgroundTolerance(Number(event.target.value)); invalidateAnalysis(); }} /></>}
 
-          <div className="threshold-card"><div className="threshold-title"><strong>Positive stain threshold</strong><span>Manual</span></div><label htmlFor="minimum-threshold">Minimum <b>{minThreshold}</b></label><input id="minimum-threshold" className="single-range berry" type="range" min="0" max="255" value={minThreshold} onChange={(event) => { setMinThreshold(Math.min(Number(event.target.value), maxThreshold)); invalidateAnalysis(); }} /><label htmlFor="maximum-threshold">Maximum <b>{maxThreshold}</b></label><input id="maximum-threshold" className="single-range berry" type="range" min="0" max="255" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.max(Number(event.target.value), minThreshold)); invalidateAnalysis(); }} /></div>
-          <p className="validation-note">{stainScoreDescription(stain, signalChannel)}</p>
+          <div className="threshold-card">
+            <div className="threshold-title"><strong>Positive stain threshold</strong><span>{thresholdMax === 65535 ? '16-bit' : '8-bit'}</span></div>
+            <label htmlFor="minimum-threshold-value">Minimum</label>
+            <input disabled={loading} id="minimum-threshold-value" className="text-input" type="number" min="0" max={maxThreshold} step="1" value={minThreshold} onChange={(event) => { setMinThreshold(Math.max(0, Math.min(Math.round(Number(event.target.value)), maxThreshold))); invalidateAnalysis(); }} />
+            <input disabled={loading} id="minimum-threshold" aria-label="Minimum threshold slider" className="single-range berry" type="range" min="0" max={thresholdMax} step="1" value={minThreshold} onChange={(event) => { setMinThreshold(Math.min(Number(event.target.value), maxThreshold)); invalidateAnalysis(); }} />
+            <label htmlFor="maximum-threshold-value">Maximum</label>
+            <input disabled={loading} id="maximum-threshold-value" className="text-input" type="number" min={minThreshold} max={thresholdMax} step="1" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.min(thresholdMax, Math.max(Math.round(Number(event.target.value)), minThreshold))); invalidateAnalysis(); }} />
+            <input disabled={loading} id="maximum-threshold" aria-label="Maximum threshold slider" className="single-range berry" type="range" min="0" max={thresholdMax} step="1" value={maxThreshold} onChange={(event) => { setMaxThreshold(Math.max(Number(event.target.value), minThreshold)); invalidateAnalysis(); }} />
+            <p className="validation-note">Range: 0–{formatInteger(thresholdMax)}. Both limits are inclusive.</p>
+          </div>
+          <p className="validation-note">{thresholdMax === 65535
+            ? stain.includes('(IF)')
+              ? 'Thresholds use original 16-bit channel intensities. Preview brightness does not change measurements.'
+              : 'Stain scores use original 16-bit intensities on a 0–65,535 scale; H&E offsets scale proportionally. These stain transforms differ from Fiji intensity thresholding.'
+            : stainScoreDescription(stain, signalChannel)}</p>
 
           <button type="button" className="primary-button" disabled={!image || loading || !sampleId.trim()} onClick={() => runAnalysis()}>{loading ? 'Working…' : 'Analyze image'} <span>→</span></button>
           <p className="validation-note">Research-use workflow. Thresholds and ROI regions must be reviewed before statistical analysis.</p>
@@ -694,7 +753,7 @@ export default function Workbench({ userName }: { userName: string }) {
             <div className="file-chip" title={sourceName}><i /> {sourceName} <span>{formatBytes(sourceSize)}</span></div>
             {folderFiles.length > 1 && <div className="folder-nav" aria-label="Folder image navigation"><button type="button" aria-label="Previous file" disabled={loading || folderIndex === 0} onClick={() => openFolderFile(folderIndex - 1)}>‹</button><span>{folderIndex + 1} / {folderFiles.length}</span><button type="button" aria-label="Next file" disabled={loading || folderIndex === folderFiles.length - 1} onClick={() => openFolderFile(folderIndex + 1)}>›</button></div>}
             <div className="view-tabs" aria-label="Image view">{(['overlay', 'original', 'mask'] as ViewMode[]).map((option) => <button key={option} type="button" aria-pressed={view === option} className={view === option ? 'active' : ''} onClick={() => setView(option)}>{option}</button>)}</div>
-            <div className="open-actions"><button className="replace-button" type="button" disabled={loading} onClick={() => fileInput.current?.click()}>Open file</button><button className="replace-button" type="button" disabled={loading} onClick={() => folderInput.current?.click()}>Open folder</button></div>
+            <div className="open-actions"><button className="replace-button" type="button" onClick={() => fileInput.current?.click()}>Open file</button><button className="replace-button" type="button" onClick={() => folderInput.current?.click()}>Open folder</button></div>
             <input ref={fileInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" hidden onChange={onFileChange} />
             <input ref={folderInput} type="file" accept=".nd2,.tif,.tiff,.jp2,.j2k,.jpx" multiple hidden onChange={onFolderChange} {...{ webkitdirectory: '', directory: '' }} />
           </div>

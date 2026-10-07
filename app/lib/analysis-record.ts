@@ -1,8 +1,10 @@
+import type { StainingPanel } from './stain-channels';
 import type { AnalysisResult, DecodedImage, RoiRect } from './image-analysis';
 
-export const ANALYSIS_SCHEMA_VERSION = '1.0.0-experimental';
+export const ANALYSIS_SCHEMA_VERSION = '1.2.0-experimental';
 
 export type AnalysisSettingsSnapshot = {
+  stainingPanel?: StainingPanel;
   stain: string;
   signalChannel: 'red' | 'green' | 'blue' | 'grayscale';
   structure: string;
@@ -102,11 +104,18 @@ export function buildAnalysisRecord(input: BuildAnalysisRecordInput) {
       sha256: image.sourceSha256,
     },
     analysis: {
+      stainingPanel: {
+        coStained: settings.stainingPanel?.coStained ?? 'unspecified',
+        activeId: settings.stainingPanel?.activeId ?? null,
+        assignments: settings.stainingPanel?.assignments.map((assignment) => ({ ...assignment })) ?? [],
+      },
       stain: settings.stain,
       signalChannel: settings.signalChannel,
       structureCategory: settings.structure,
       minThreshold: settings.minThreshold,
       maxThreshold: settings.maxThreshold,
+      scoreBitDepth: image.analysisBitDepth ?? 8,
+      intensitySource: image.samples ? 'native-integer-samples' : '8bit-display',
       thresholdBounds: 'inclusive' as const,
       removeBackground: settings.removeBackground,
       backgroundTolerance: settings.backgroundTolerance,
@@ -116,7 +125,7 @@ export function buildAnalysisRecord(input: BuildAnalysisRecordInput) {
     metrics,
     metricDefinitions,
     algorithms: {
-      stainScore: 'kidneyquant-rgb-score-v1-experimental',
+      stainScore: image.samples ? 'kidneyquant-native-integer-score-v2-experimental' : 'kidneyquant-rgb-score-v1-experimental',
       background: settings.removeBackground ? 'border-connected-source-rgb-distance-v1' : 'disabled',
       perimeter: '4-neighbor-grid-edge-v1',
     },
@@ -177,9 +186,14 @@ export function analysisRecordToCsv(record: AnalysisRecord) {
     ['Source_SHA256', record.source.sha256],
     ['Stain', record.analysis.stain],
     ['Signal_Channel', record.analysis.signalChannel],
+    ['Co_Stained', record.analysis.stainingPanel.coStained],
+    ['Active_Stain_ID', record.analysis.stainingPanel.activeId],
+    ['Stain_Channel_Assignments', JSON.stringify(record.analysis.stainingPanel.assignments)],
     ['Structure_Category', record.analysis.structureCategory],
     ['Min_Threshold', record.analysis.minThreshold],
     ['Max_Threshold', record.analysis.maxThreshold],
+    ['Score_Bit_Depth', record.analysis.scoreBitDepth],
+    ['Intensity_Source', record.analysis.intensitySource],
     ['Threshold_Bounds', record.analysis.thresholdBounds],
     ['Remove_Background', record.analysis.removeBackground],
     ['Background_Tolerance', record.analysis.backgroundTolerance],

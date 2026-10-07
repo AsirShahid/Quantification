@@ -103,12 +103,14 @@ export async function POST(request: Request) {
       method: 'POST',
       headers: {
         'content-type': 'application/octet-stream',
+        'accept': request.headers.get('accept') === 'application/vnd.kidneyquant.samples+gzip'
+          ? 'application/vnd.kidneyquant.samples+gzip' : 'image/png',
         'content-length': String(contentLength),
         'x-kidneyquant-file-extension': `.${extension}`,
       },
       body: request.body,
       redirect: 'error',
-      signal: AbortSignal.timeout(15 * 60 * 1000),
+      signal: AbortSignal.any([request.signal, AbortSignal.timeout(15 * 60 * 1000)]),
       // @ts-expect-error Node fetch requires duplex for a streamed request body.
       duplex: 'half',
     });

@@ -674,7 +674,11 @@ export default function Workbench({ userName }: { userName: string }) {
     finally { setExporting(false); }
   };
   const signalChannels = availableSignalChannels(image);
-  const channelMappingDisclosure = image?.channelCount === 2
+  const channelMappingDisclosure = image?.channelMapping
+    ? `${image.channelMapping.method === 'nd2-color-metadata' ? 'ND2 channel colors' : 'Unverified source-order colors'}: ${image.channelMapping.sourceIndices.map((index, slot) => `source ${index + 1} (${image.channelMapping!.sourceNames[slot] || 'unnamed'}) → ${image.channelCount === 1 ? 'grayscale' : ['Red', 'Green', 'Blue'][slot]}`).join('; ')}.`
+    : image?.sourceFormat === 'ND2'
+    ? 'Channel colors are unverified. Update and restart the Python companion, then reopen this ND2 to read its channel mapping.'
+    : image?.channelCount === 2
     ? 'Two source channels mapped: channel 1 → display R and channel 2 → display G. No Blue source channel is present.'
     : image?.channelCount === 1
       ? 'One source channel is rendered as a grayscale composite.'

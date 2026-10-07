@@ -14,6 +14,7 @@ export type DecodedImage = {
   selectedShape: string;
   selectedAxes: string[];
   channelCount: number;
+  channelMapping?: { method: string; sourceIndices: number[]; sourceNames: string[] };
   planeSelection: Record<string, number | string>;
   processing: string;
   processingLocation: 'browser' | 'private companion';
@@ -221,6 +222,7 @@ async function decodeWithCompanion(file: File, signal?: AbortSignal): Promise<De
     selectedShape: metadata.selectedShape,
     selectedAxes: metadata.selectedAxes,
     channelCount: metadata.channelCount,
+    channelMapping: metadata.channelMapping,
     planeSelection: metadata.planeSelection,
     processing: metadata.processing,
     processingLocation: metadata.processingLocation,

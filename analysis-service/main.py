@@ -42,6 +42,7 @@ class DecodedSource:
     selection: dict[str, int | str]
     processing: str
     samples: np.ndarray | None = None
+    channel_mapping: dict[str, Any] | None = None
 
 
 @app.get("/health")
@@ -273,9 +274,32 @@ def jp2_component_precision(path: Path) -> tuple[int, bool, int]:
         return _codestream_component_precision(stream, codestream_start, codestream_end)
 
 
+def map_nd2_channels(plane: np.ndarray, metadata: Any) -> tuple[np.ndarray, dict[str, Any]]:
+    """Use a complete, unambiguous RGB metadata permutation; never infer antibody colors."""
+    count = plane.shape[-1] if plane.ndim == 3 else 1
+    channels = getattr(metadata, "channels", None) or []
+    names = [str(getattr(getattr(channels[i], "channel", None), "name", ""))[:200]
+             if i < len(channels) else "" for i in range(count)]
+    order = list(range(count))
+    method = "source-order"
+    if count == 3 and len(channels) == 3:
+        destinations = []
+        for item in channels:
+            color = getattr(getattr(item, "channel", None), "color", None)
+            components = [getattr(color, key, 0) for key in ("r", "g", "b")]
+            peak = max(components)
+            destinations.append(components.index(peak) if peak > 0 and components.count(peak) == 1 else -1)
+        if sorted(destinations) == [0, 1, 2]:
+            order = [destinations.index(component) for component in range(3)]
+            plane = np.ascontiguousarray(plane[..., order])
+            method = "nd2-color-metadata"
+    return plane, {"method": method, "sourceIndices": order, "sourceNames": [names[i] for i in order]}
+
+
 def decode_source(path: Path, suffix: str, render_preview: bool = True) -> DecodedSource:
     normalized_suffix = suffix.lower()
     selection: dict[str, int | str] = {}
+    channel_mapping = None
     if normalized_suffix == ".nd2":
         with nd2.ND2File(path) as nd_file:
             lazy = nd_file.to_dask()
@@ -286,6 +310,7 @@ def decode_source(path: Path, suffix: str, render_preview: bool = True) -> Decod
             validate_retained_plane(retained_shape, retained_axes)
             selected = np.asarray(lazy[indexer].compute(scheduler="synchronous"))
             plane, _ = select_first_plane(selected, retained_axes)
+            plane, channel_mapping = map_nd2_channels(plane, nd_file.metadata)
             significant_bits = int(nd_file.attributes.bitsPerComponentSignificant)
         selected_axes = ("Y", "X") if plane.ndim == 2 else ("Y", "X", next(axis for axis in retained_axes if axis not in {"Y", "X"}))
         source_format = "ND2"
@@ -357,12 +382,14 @@ def decode_source(path: Path, suffix: str, render_preview: bool = True) -> Decod
         selection=selection,
         processing=processing,
         samples=plane,
+        channel_mapping=channel_mapping,
     )
 
 
 def metadata_headers(decoded: DecodedSource) -> dict[str, str]:
     channel_count = decoded.selected_shape[-1] if len(decoded.selected_shape) == 3 else 1
     return {
+        **({"X-KidneyQuant-Channel-Mapping": json.dumps(decoded.channel_mapping, separators=(",", ":"), ensure_ascii=True)} if decoded.channel_mapping else {}),
         "X-KidneyQuant-Source-Format": decoded.source_format,
         "X-KidneyQuant-Original-Bit-Depth": str(decoded.significant_bits),
         "X-KidneyQuant-Original-Shape": "x".join(str(value) for value in decoded.original_shape),

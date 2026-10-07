@@ -64,7 +64,7 @@ test('analysis record preserves source, plane, ROI, settings, algorithms, and me
     },
   });
 
-  assert.equal(record.schemaVersion, '1.2.0-experimental');
+  assert.equal(record.schemaVersion, '1.4.0-experimental');
   assert.equal(record.quantitativeStatus, 'experimental-not-validated');
   assert.deepEqual(record.source.provenance, { kind: 'user-supplied' });
   assert.deepEqual(record.source.planeSelection, image.planeSelection);
@@ -82,6 +82,16 @@ test('analysis record preserves source, plane, ROI, settings, algorithms, and me
     'Arithmetic mean stain score over all analyzed pixels',
   );
   assert.equal(record.calibration, null);
+});
+
+test('converted fluorescence exports identify the 8-bit score rather than native measurement', () => {
+  const record = buildAnalysisRecord({
+    analyzedAt:'2026-10-07',analyst:'Test',sampleId:'Test',sourceName:'test.tif',sourceSize:1,sourceLastModified:0,
+    image:{...image,analysisWorkflow:'fluorescence-8bit',analysisBitDepth:8,samples:new Uint8Array(2048)},result,
+    settings:{stain:'Channel intensity (IF)',signalChannel:'red',structure:'Whole tissue',minThreshold:40,maxThreshold:255,removeBackground:false,backgroundTolerance:18,outsideMode:'exclude',rois:[]},
+  });
+  assert.equal(record.algorithms.stainScore,'kidneyquant-converted-8bit-score-v1-experimental');
+  assert.equal(record.analysis.intensitySource,'converted-8bit-analysis-copy');
 });
 
 test('analysis record snapshots are isolated from later image and settings mutations', () => {

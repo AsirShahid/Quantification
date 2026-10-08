@@ -36,6 +36,16 @@ test('Excel keeps differently cased marker names in distinct valid worksheets',a
  assert.deepEqual(book.worksheets.slice(0,2).map(sheet=>sheet.getCell('A1').value),['DAPI (IF)','dapi (IF)']);
 });
 
+test('reference worksheet retains glomerular outline coordinates',async()=>{
+ const outlines=[{points:[{x:0,y:0},{x:2,y:0},{x:0,y:2}]}];
+ const reference={id:'ref',name:'tile',settings:{red:{minimum:80,maximum:255,brightness:1}},conversion:null,glomeruli:outlines};
+ const bytes=await channelWorkbook([], [tile('a','WT','M1',10)], [reference]);
+ const book=new ExcelJS.Workbook();await book.xlsx.load(Buffer.from(bytes));
+ const sheet=book.getWorksheet('Reference thresholds')!;
+ assert.equal(sheet.getCell('K1').value,'Glomerular outlines');
+ assert.deepEqual(JSON.parse(String(sheet.getCell('K2').value)),outlines);
+});
+
 test('Excel preserves every tile in nested mouse columns and separates duplicate mouse IDs across groups',async()=>{
  const data=[tile('a','WT','M1',10),tile('b','WT','M1',30),tile('c','WT','M2',80),tile('empty','WT','M2',0,0),tile('d','KO','M1',70)];
  const bytes=await channelWorkbook([],data);const book=new ExcelJS.Workbook();await book.xlsx.load(Buffer.from(bytes));

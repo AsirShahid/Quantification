@@ -64,7 +64,7 @@ test('analysis record preserves source, plane, ROI, settings, algorithms, and me
     },
   });
 
-  assert.equal(record.schemaVersion, '1.4.0-experimental');
+  assert.equal(record.schemaVersion, '1.5.0-experimental');
   assert.equal(record.quantitativeStatus, 'experimental-not-validated');
   assert.deepEqual(record.source.provenance, { kind: 'user-supplied' });
   assert.deepEqual(record.source.planeSelection, image.planeSelection);
@@ -338,4 +338,20 @@ test('co-stain assignments and active marker are frozen in the export snapshot',
   assert.equal(record.analysis.stainingPanel.coStained, 'yes');
   assert.match(analysisRecordToCsv(record), /Stain_Channel_Assignments/);
   assert.match(analysisRecordToCsv(record), /AF2747/);
+});
+
+test('exports preserve independent glomerular outlines and pooled handling', () => {
+  const glomeruli = [{ points: [{x:0,y:0},{x:2,y:0},{x:0,y:2}] }];
+  const record = buildAnalysisRecord({ analyzedAt:'2026-10-07', analyst:'test', sampleId:'tile', sourceName:'tile.tif', sourceSize:0, sourceLastModified:0, image, result,
+    settings:{ stain:'alpha-SMA (IF)', signalChannel:'green', structure:'Interstitial region', minThreshold:40, maxThreshold:255, removeBackground:false, backgroundTolerance:18, outsideMode:'exclude', rois:[], glomeruli } });
+  glomeruli[0].points[0].x = 999;
+  assert.equal(record.analysis.glomeruli[0].points[0].x, 0);
+  assert.equal(record.analysis.aggregation, 'pooled-pixel-union-per-tile');
+  assert.equal(record.analysis.glomerularHandling, 'exclude-union');
+  const json = JSON.parse(JSON.stringify(record));
+  assert.equal(json.analysis.glomeruli.length, 1);
+  const csv = analysisRecordToCsv(record);
+  assert.match(csv, /Glomerular_Outlines/);
+  assert.match(csv, /pooled-pixel-union-per-tile/);
+  assert.match(csv, /exclude-union/);
 });

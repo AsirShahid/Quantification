@@ -6,6 +6,7 @@ export function captureChannels(image:DecodedImage, settings:Record<string,Chann
  const values=colors.map(c=>settings[channelSettingsKey(options.stain,image.channelCount===1?'grayscale':c)]??{minimum:0,maximum:255,brightness:1});
  const ranges=values.map((v,i)=>v.displayMaximum??auto[i]);
  const lower=values.map(v=>v.displayMinimum??0),brightness=values.map(v=>v.brightness);
+ const glomeruli=options.glomeruli?.map(({points})=>({points:points.map(p=>({x:p.x*preview.width/image.width,y:p.y*preview.height/image.height}))}));
  const output:Record<string,string>={};
  const grid=document.createElement('canvas');grid.width=840;grid.height=900;
  const ctx=grid.getContext('2d')!;ctx.fillStyle='#08100c';ctx.fillRect(0,0,840,900);
@@ -20,10 +21,16 @@ export function captureChannels(image:DecodedImage, settings:Record<string,Chann
     if(roi.points?.length) {c.beginPath();roi.points.forEach((p,j)=>{if(j)c.lineTo(p.x*sx,p.y*sy);else c.moveTo(p.x*sx,p.y*sy);});c.closePath();c.stroke();}
     else c.strokeRect(roi.x*sx,roi.y*sy,roi.width*sx,roi.height*sy);
   }
+  c.strokeStyle='#ffbf69';
+  for(const [index,outline] of (glomeruli??[]).entries()) {
+   if(!outline.points.length)continue;
+   c.beginPath();outline.points.forEach((p,j)=>{if(j)c.lineTo(p.x,p.y);else c.moveTo(p.x,p.y);});c.closePath();c.stroke();
+   c.fillStyle='#ffbf69';c.font='12px Arial';c.fillText(`G${index+1}`,outline.points[0].x,outline.points[0].y);
+  }
   output[channel]=canvas.toDataURL('image/png');
   if(channel!=='composite') {
    const value=settings[channelSettingsKey(options.stain,channel)];
-   const overlay={...options,signalChannel:channel,minThreshold:value?.minimum??options.minThreshold,maxThreshold:value?.maximum??options.maxThreshold,rois:options.rois.map(r=>({...r,x:r.x*preview.width/image.width,y:r.y*preview.height/image.height,width:r.width*preview.width/image.width,height:r.height*preview.height/image.height,points:r.points?.map(p=>({x:p.x*preview.width/image.width,y:p.y*preview.height/image.height}))}))};
+   const overlay={...options,glomeruli,signalChannel:channel,minThreshold:value?.minimum??options.minThreshold,maxThreshold:value?.maximum??options.maxThreshold,rois:options.rois.map(r=>({...r,x:r.x*preview.width/image.width,y:r.y*preview.height/image.height,width:r.width*preview.width/image.width,height:r.height*preview.height/image.height,points:r.points?.map(p=>({x:p.x*preview.width/image.width,y:p.y*preview.height/image.height}))}))};
    const overlayCanvas=document.createElement('canvas');overlayCanvas.width=preview.width;overlayCanvas.height=preview.height;
    overlayCanvas.getContext('2d')!.putImageData(new ImageData(renderPreview(preview,channel,ranges,brightness,overlay,'overlay',lower),preview.width,preview.height),0,0);
    output[channel+'-counted']=overlayCanvas.toDataURL('image/png');

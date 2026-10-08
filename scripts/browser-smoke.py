@@ -35,6 +35,8 @@ with sync_playwright() as pw:
   expect(page.locator('.primary-button')).to_be_enabled(timeout=30000)
   assert page.locator('.analysis-message.error').count()==0, page.locator('.analysis-message').inner_text()
  def number(id,value):
+  # Let channel-selection effects settle before editing the controlled number field.
+  page.evaluate('()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
   page.locator('#'+id).fill(str(value)); page.locator('#'+id).press('Enter')
   expect(page.locator('#'+id)).to_have_value(str(value))
  def load(*names):
@@ -132,6 +134,67 @@ with sync_playwright() as pw:
   assert len(r['analysis']['rois'])==1 and len(r['analysis']['rois'][0]['points'])>=3
   assert 0<r['metrics']['analyzedPixels']<768 and r['metrics']['positivePercent']==100
   summary['checks'].append('Freehand outline is retained in the export and limits the counted region')
+  # Independent glomerular outlines on a larger image exercise preview scaling too.
+  page.reload(wait_until='networkidle');ready()
+  glom_image=Image.new('RGB',(960,320),(0,50,0))
+  glom_image.paste((200,50,0),(0,0,480,320));glom_image.save(OUT/'glomeruli.tif',compression='raw')
+  load('glomeruli.tif')
+  page.locator('#signal-channel').select_option('red')
+  page.locator('#analysis-scope').select_option('red')
+  number('red-minimum',100);number('red-maximum',255)
+  page.locator('#roi-category').select_option('Glomeruli')
+  page.locator('.primary-button').click()
+  expect(page.locator('.analysis-message.error')).to_contain_text('Outline at least one glomerulus')
+  def outline_rect(x1,y1,x2,y2):
+   canvas=page.get_by_label('Microscopy image analysis preview');box=canvas.bounding_box();assert box is not None
+   page.mouse.move(box['x']+box['width']*x1,box['y']+box['height']*y1);page.mouse.down()
+   for x,y in [(x2,y1),(x2,y2),(x1,y2),(x1,y1)]:
+    page.mouse.move(box['x']+box['width']*x,box['y']+box['height']*y,steps=5)
+   page.mouse.up()
+  outline_rect(.1,.1,.3,.9);outline_rect(.2,.3,.8,.7);outline_rect(.1,.1,.3,.9)
+  analyze();glom=records('glomerular.json')[0]
+  assert len(glom['analysis']['glomeruli'])==3
+  assert glom['analysis']['glomerularHandling']=='include-union'
+  assert glom['analysis']['aggregation']=='pooled-pixel-union-per-tile'
+  # Rectangles at these exact image-relative locations: compute union independently.
+  outlines=glom['analysis']['glomeruli']
+  bounds=[(min(p['x'] for p in g['points']),min(p['y'] for p in g['points']),max(p['x'] for p in g['points']),max(p['y'] for p in g['points'])) for g in outlines]
+  for got,want in zip(bounds,[(96,32,288,288),(192,96,768,224),(96,32,288,288)]):
+   assert all(abs(a-b)<1 for a,b in zip(got,want)),(got,want)
+  selected={(x,y) for y in range(320) for x in range(960) if any(a<=x+.5<c and b<=y+.5<d for a,b,c,d in bounds)}
+  positive=sum(x<480 for x,y in selected)
+  assert glom['metrics']['analyzedPixels']==len(selected)
+  assert glom['metrics']['positivePixels']==positive
+  assert abs(glom['metrics']['positivePercent']-positive/len(selected)*100)<1e-9
+  def red_pixel(x,y):
+   return page.get_by_label('red channel preview').evaluate('(c,p)=>Array.from(c.getContext("2d").getImageData(Math.floor(c.width*p[0]),Math.floor(c.height*p[1]),1,1).data)',[x,y])
+  # Selected positive pixels alone receive the colored detection overlay.
+  page.get_by_role('button',name='Show counted pixels',exact=True).click()
+  page.evaluate('()=>new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)))')
+  assert red_pixel(.15,.2)[1]>0,'Glomerular channel preview does not show its inclusion mask'
+  assert red_pixel(.45,.85)[1]==0,'Glomerular preview includes pixels outside the union'
+  page.locator('#roi-category').select_option('Interstitial region');analyze()
+  interstitial=records('interstitial.json')[0]
+  assert interstitial['analysis']['glomeruli']==glom['analysis']['glomeruli']
+  assert interstitial['analysis']['glomerularHandling']=='exclude-union'
+  assert interstitial['metrics']['analyzedPixels']==960*320-len(selected)
+  assert interstitial['metrics']['positivePixels']==480*320-positive
+  assert red_pixel(.15,.2)[1]==0 and red_pixel(.45,.85)[1]>0
+  download('Selected channel CSV','interstitial.csv')
+  assert 'Glomerular_Outlines' in (OUT/'interstitial.csv').read_text()
+  page.get_by_role('button',name='Save reference tile (0)',exact=True).click()
+  page.get_by_role('button',name='Accept average thresholds',exact=True).click();analyze()
+  book=download('Export Excel · staining tabs','glomerular-study.xlsx')
+  with zipfile.ZipFile(book) as z:
+   strings=z.read('xl/sharedStrings.xml').decode()
+   assert 'analysis.glomeruli' in strings and 'exclude-union' in strings
+  page.get_by_role('button',name='Annotate / save PNG',exact=True).click()
+  download('Download PNG','glomerular.png');page.get_by_role('button',name='Close',exact=True).click()
+  assert any(r>220 and 140<g<220 and b<140 for r,g,b,*_ in Image.open(OUT/'glomerular.png').get_flattened_data()),'PNG export lost glomerular outlines'
+  # Category changes preserve the outlines, but opening a different tile never transfers them.
+  load('rgb-a.tif')
+  expect(page.get_by_role('button',name='Clear glomeruli (0)',exact=True)).to_be_disabled()
+  summary['checks'].append('Glomerular union, interstitial complement, scaled RGB previews, JSON/CSV/Excel/PNG export and per-file outline isolation pass')
   assert not errors,errors
   summary.update(passed=True,browser=browser.version,page_errors=errors,decode_responses=decodes)
   page.screenshot(path=str(OUT/'verified.png'),full_page=True)

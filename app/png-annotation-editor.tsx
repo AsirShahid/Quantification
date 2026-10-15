@@ -3,14 +3,28 @@
 import {useEffect, useRef, useState, type PointerEvent} from 'react';
 
 type Point = {x:number;y:number};
-type Shape = {kind:'rectangle'|'ellipse'|'arrow'|'line'|'freehand';color:string;width:number;points:Point[]};
+type Shape = {kind:'rectangle'|'ellipse'|'arrow'|'triangle'|'star'|'asterisk'|'line'|'freehand';color:string;width:number;filled:boolean;points:Point[]};
 
 function paintShape(ctx:CanvasRenderingContext2D,shape:Shape) {
  const a=shape.points[0],b=shape.points[shape.points.length-1];
- ctx.save();ctx.strokeStyle=shape.color;ctx.lineWidth=shape.width;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();
+ ctx.save();ctx.fillStyle=shape.color;ctx.strokeStyle=shape.color;ctx.lineWidth=shape.width;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();
  if(shape.kind==='rectangle')ctx.rect(a.x,a.y,b.x-a.x,b.y-a.y);
+ else if(shape.kind==='triangle') {
+  // Drag from the base center toward the tip to orient the pointer.
+  const angle=Math.atan2(b.y-a.y,b.x-a.x),half=Math.hypot(b.x-a.x,b.y-a.y)*.35;
+  ctx.moveTo(b.x,b.y);ctx.lineTo(a.x-Math.sin(angle)*half,a.y+Math.cos(angle)*half);ctx.lineTo(a.x+Math.sin(angle)*half,a.y-Math.cos(angle)*half);ctx.closePath();
+ }
+ else if(shape.kind==='star') {
+  const radius=Math.hypot(b.x-a.x,b.y-a.y),angle=Math.atan2(b.y-a.y,b.x-a.x);
+  for(let i=0;i<10;i++){const r=i%2?radius*.42:radius,theta=angle+i*Math.PI/5,x=a.x+Math.cos(theta)*r,y=a.y+Math.sin(theta)*r;if(i)ctx.lineTo(x,y);else ctx.moveTo(x,y);}ctx.closePath();
+ }
+ else if(shape.kind==='asterisk') {
+  const radius=Math.hypot(b.x-a.x,b.y-a.y),angle=Math.atan2(b.y-a.y,b.x-a.x);
+  for(let i=0;i<6;i++){const theta=angle+i*Math.PI/3;ctx.moveTo(a.x,a.y);ctx.lineTo(a.x+Math.cos(theta)*radius,a.y+Math.sin(theta)*radius);}
+ }
  else if(shape.kind==='ellipse')ctx.ellipse((a.x+b.x)/2,(a.y+b.y)/2,Math.abs(b.x-a.x)/2,Math.abs(b.y-a.y)/2,0,0,Math.PI*2);
  else {ctx.moveTo(a.x,a.y);if(shape.kind==='freehand')shape.points.slice(1).forEach(p=>ctx.lineTo(p.x,p.y));else ctx.lineTo(b.x,b.y);}
+ if(shape.filled && ['triangle','star','ellipse','rectangle'].includes(shape.kind))ctx.fill();
  ctx.stroke();
  if(shape.kind==='arrow') {const angle=Math.atan2(b.y-a.y,b.x-a.x),size=12+shape.width*2;ctx.beginPath();ctx.moveTo(b.x-size*Math.cos(angle-Math.PI/6),b.y-size*Math.sin(angle-Math.PI/6));ctx.lineTo(b.x,b.y);ctx.lineTo(b.x-size*Math.cos(angle+Math.PI/6),b.y-size*Math.sin(angle+Math.PI/6));ctx.stroke();}
  ctx.restore();
@@ -18,7 +32,7 @@ function paintShape(ctx:CanvasRenderingContext2D,shape:Shape) {
 
 export default function PngAnnotationEditor({source,filename,onClose}:{source:string;filename:string;onClose:()=>void}) {
  const dialog=useRef<HTMLDialogElement>(null),canvas=useRef<HTMLCanvasElement>(null),base=useRef<HTMLImageElement|null>(null),draft=useRef<Shape|null>(null);
- const [shapes,setShapes]=useState<Shape[]>([]),[kind,setKind]=useState<Shape['kind']>('arrow'),[color,setColor]=useState('#ffff00'),[width,setWidth]=useState(3),[ready,setReady]=useState(false);
+ const [shapes,setShapes]=useState<Shape[]>([]),[kind,setKind]=useState<Shape['kind']>('arrow'),[color,setColor]=useState('#ffff00'),[width,setWidth]=useState(3),[filled,setFilled]=useState(true),[ready,setReady]=useState(false);
  const repaint=(items:Shape[],pending:Shape|null=null)=>{const c=canvas.current,ctx=c?.getContext('2d');if(!c||!ctx||!base.current)return;ctx.clearRect(0,0,c.width,c.height);ctx.drawImage(base.current,0,0);items.forEach(shape=>paintShape(ctx,shape));if(pending)paintShape(ctx,pending);};
  useEffect(()=>{dialog.current?.showModal();const img=new Image();let active=true;img.onload=()=>{if(!active||!canvas.current)return;base.current=img;canvas.current.width=img.width;canvas.current.height=img.height;canvas.current.getContext('2d')?.drawImage(img,0,0);setReady(true);};img.src=source;return()=>{active=false;};},[source]);
  useEffect(()=>{repaint(shapes);},[shapes,ready]);
@@ -28,7 +42,8 @@ export default function PngAnnotationEditor({source,filename,onClose}:{source:st
  return <dialog ref={dialog} className="png-annotation-dialog" aria-labelledby="annotation-title" onCancel={onClose}>
   <div className="annotation-header"><div><h2 id="annotation-title">Annotate PNG</h2><p>Draw on any image. Annotations only affect this PNG, not quantification.</p></div><button type="button" onClick={onClose}>Close</button></div>
   <div className="annotation-tools">
-   <label htmlFor="annotation-shape">Shape</label><select id="annotation-shape" value={kind} onChange={e=>setKind(e.target.value as Shape['kind'])}><option value="arrow">Arrow</option><option value="rectangle">Rectangle</option><option value="ellipse">Ellipse / circle</option><option value="line">Line</option><option value="freehand">Freehand</option></select>
+   <label htmlFor="annotation-shape">Shape</label><select id="annotation-shape" value={kind} onChange={e=>setKind(e.target.value as Shape['kind'])}><option value="arrow">Arrow pointer</option><option value="triangle">Triangle pointer</option><option value="star">Star pointer</option><option value="asterisk">Asterisk</option><option value="rectangle">Rectangle</option><option value="ellipse">Ellipse / circle</option><option value="line">Line</option><option value="freehand">Freehand</option></select>
+   {['triangle','star','ellipse','rectangle'].includes(kind) && <label><input type="checkbox" checked={filled} onChange={e=>setFilled(e.target.checked)} /> Solid fill</label>}
    <label htmlFor="annotation-color">Color</label><input id="annotation-color" type="color" value={color} onChange={e=>setColor(e.target.value)} />
    <label htmlFor="annotation-width">Line width</label><select id="annotation-width" value={width} onChange={e=>setWidth(Number(e.target.value))}>{[1,2,3,5,8].map(w=><option key={w} value={w}>{w} px</option>)}</select>
    <button type="button" disabled={!shapes.length} onClick={()=>setShapes(items=>items.slice(0,-1))}>Undo</button>
@@ -36,6 +51,7 @@ export default function PngAnnotationEditor({source,filename,onClose}:{source:st
    <button type="button" disabled={!ready} onClick={()=>{repaint(shapes);const link=document.createElement('a');link.href=canvas.current!.toDataURL('image/png');link.download=filename;link.click();}}>Download PNG</button>
    <span role="status">{shapes.length} annotation{shapes.length===1?'':'s'}</span>
   </div>
-  <div className="annotation-image"><canvas ref={canvas} aria-label="PNG annotation canvas" onPointerDown={e=>{if(!ready||e.button!==0)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);const p=point(e);draft.current={kind,color,width,points:[p,p]};}} onPointerMove={move} onPointerUp={e=>{if(!draft.current)return;move(e);const completed=draft.current;draft.current=null;if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);if(completed.points.some(p=>Math.hypot(p.x-completed.points[0].x,p.y-completed.points[0].y)>1))setShapes(items=>[...items,completed]);else repaint(shapes);}} onPointerCancel={cancel} onLostPointerCapture={cancel}/></div>
+  <p>{kind==='triangle' ? 'Drag from the triangle base toward the structure you want to point at.' : kind==='star'||kind==='asterisk' ? 'Drag from the marker center outward to set its size and direction.' : kind==='arrow' ? 'Drag toward the structure you want the arrow to point at.' : 'Drag on the image to draw. Use Undo to remove the last annotation.'}</p>
+  <div className="annotation-image"><canvas ref={canvas} aria-label="PNG annotation canvas" onPointerDown={e=>{if(!ready||e.button!==0)return;e.preventDefault();e.currentTarget.setPointerCapture(e.pointerId);const p=point(e);draft.current={kind,color,width,filled,points:[p,p]};}} onPointerMove={move} onPointerUp={e=>{if(!draft.current)return;move(e);const completed=draft.current;draft.current=null;if(e.currentTarget.hasPointerCapture(e.pointerId))e.currentTarget.releasePointerCapture(e.pointerId);if(completed.points.some(p=>Math.hypot(p.x-completed.points[0].x,p.y-completed.points[0].y)>1))setShapes(items=>[...items,completed]);else repaint(shapes);}} onPointerCancel={cancel} onLostPointerCapture={cancel}/></div>
  </dialog>;
 }

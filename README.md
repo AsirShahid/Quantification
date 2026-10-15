@@ -133,6 +133,12 @@ Sample summary and Group summary are additional descriptive outputs, not replace
 
 The Analysis scope selector chooses all available channels or a specific red, green, blue, or grayscale channel for both individual tiles and folder runs. Only the requested channels are quantified and added to results/exports; the four-channel viewer and image screenshots remain available. Re-analyzing a saved tile replaces its earlier results with the newly selected scope. Sirius Red remains a single derived magenta-score measurement.
 
+## PNG annotations and outline exports
+
+The PNG editor includes arrow, triangle, star, and asterisk pointers alongside rectangle, ellipse, line, and freehand tools. Triangle, star, rectangle, and ellipse support solid or outline-only fills. These annotations affect the downloaded PNG only, not measurements.
+
+Excel exports include a **Glomerular outlines** sheet with each vertex in source-pixel coordinates, identified by tile, sample, group, channel, measurement category, and outline. Long provenance values are split into numbered parts to stay within Excel cell limits. Existing reference columns, pooled tile values, and sample/group aggregation are unchanged.
+
 ## Glomerular and interstitial workflow
 
 Choose **Glomeruli**, enable **Outline glomeruli**, and drag around each glomerulus. Release to close the outline. Run analysis for one pooled result per tile and selected channel (total positive pixels / total analyzed pixels × 100), rather than a mean of individual glomerular percentages. Switch to **Interstitial region** to reuse those outlines as exclusions. Optional rectangular or freehand tissue regions restrict the interstitial area; without tissue regions, it uses all tissue outside outlined glomeruli. Review the orange outlines before exporting. Delete or redraw an outline to correct it. Opening another image clears its outlines. With accepted study thresholds, Analyze saves each tile and its geometry; otherwise export the finalized tile before moving on. See [integration details and verification](docs/glomerular-outlines-integration.md).

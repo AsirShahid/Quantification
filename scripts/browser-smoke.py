@@ -84,12 +84,23 @@ with sync_playwright() as pw:
   summary['checks'].append('All RGB channels measured independently; initial workbook downloaded')
   page.get_by_role('button',name='Annotate / save PNG',exact=True).click()
   canvas=page.get_by_label('PNG annotation canvas');expect(canvas).to_be_visible()
-  box=canvas.bounding_box();assert box is not None;page.mouse.move(box['x']+box['width']*.15,box['y']+box['height']*.15);page.mouse.down();page.mouse.move(box['x']+box['width']*.35,box['y']+box['height']*.3,steps=6);page.mouse.up()
-  expect(page.locator('.annotation-tools [role=status]')).to_have_text('1 annotation')
-  image=download('Download PNG','annotated.png');assert Image.open(image).width>400 and Image.open(image).height>400
+  baseline=canvas.evaluate('(c)=>c.toDataURL()')
+  for shape in ('arrow','triangle','star','asterisk','rectangle','ellipse','line','freehand'):
+   page.locator('#annotation-shape').select_option(shape)
+   fills=(True,False) if shape in ('triangle','star','rectangle','ellipse') else (None,)
+   for filled in fills:
+    if filled is not None: page.get_by_label('Solid fill').set_checked(filled)
+    box=canvas.bounding_box();assert box is not None
+    page.mouse.move(box['x']+box['width']*.15,box['y']+box['height']*.15);page.mouse.down();page.mouse.move(box['x']+box['width']*.35,box['y']+box['height']*.3,steps=6);page.mouse.up()
+    expect(page.locator('.annotation-tools [role=status]')).to_have_text('1 annotation')
+    assert canvas.evaluate('(c)=>c.toDataURL()')!=baseline,shape
+    image=download('Download PNG',f'annotated-{shape}-{filled}.png');assert Image.open(image).width>400 and Image.open(image).height>400
+    page.get_by_role('button',name='Undo',exact=True).click()
+    expect(page.locator('.annotation-tools [role=status]')).to_have_text('0 annotations')
+    assert canvas.evaluate('(c)=>c.toDataURL()')==baseline,shape
   page.get_by_role('button',name='Close',exact=True).click()
   assert records('after-annotation.json')==rs
-  summary['checks'].append('PNG pointer annotation and download do not alter measurements')
+  summary['checks'].append('All eight PNG tools draw/download/undo correctly; solid and outline fills pass; annotations leave measurements unchanged')
   page.get_by_role('button',name='Save reference tile (0)',exact=True).click()
   page.get_by_role('button',name='Accept average thresholds',exact=True).click()
   expect(page.locator('#red-minimum')).to_be_disabled()
@@ -105,7 +116,7 @@ with sync_playwright() as pw:
   with zipfile.ZipFile(workbook) as z:
    ns={'s':'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
    names=[s.attrib['name'] for s in ET.fromstring(z.read('xl/workbook.xml')).findall('s:sheets/s:sheet',ns)]
-   assert all(n in names for n in ['Reference thresholds','Provenance','Tile values','Sample summary','Group summary','Group thresholds'])
+   assert all(n in names for n in ['Reference thresholds','Provenance','Tile values','Sample summary','Group summary','Group thresholds','Glomerular outlines'])
    assert any(n.startswith('GraphPad tiles') for n in names)
    assert any(n.startswith('xl/media/') for n in z.namelist())
   summary['checks'].append('Two-tile folder study saved; workbook has reference, provenance, sample/group and GraphPad sheets plus embedded PNGs')

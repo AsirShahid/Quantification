@@ -9,7 +9,7 @@ export async function channelWorkbook(records:AnalysisRecord[], tiles:StudyTile[
  const all=entries.flatMap(t=>t.records);
  const headers=['Row','Label / filename','Area','Mean','Min','Max','IntDen','%Area','RawIntDen','MinThr','MaxThr','Area units'];
  const stains=[...new Set(all.map(r=>r.analysis.stain==='Channel intensity (IF)'?`${r.analysis.signalChannel} channel`:r.analysis.stain))];
- const usedNames=new Set(['Reference thresholds','Provenance','Sample summary','Group summary','Tile values','Group thresholds'].map(name=>name.toLowerCase()));
+ const usedNames=new Set(['Reference thresholds','Provenance','Sample summary','Group summary','Tile values','Group thresholds','Glomerular outlines'].map(name=>name.toLowerCase()));
  for(const staining of stains) {
   let name=staining.replace(/[\\/?*\[\]:]/g,' ').slice(0,31)||'Staining';const base=name;let suffix=2;while(usedNames.has(name.toLowerCase())){name=base.slice(0,27)+' '+suffix++;}usedNames.add(name.toLowerCase());
   const sheet=workbook.addWorksheet(name);sheet.getRow(1).values=[staining];sheet.getRow(2).values=['Each sample has its own column group. Tiles run vertically. Baseline and threshold-positive rows share the same ROI denominator.'];
@@ -78,11 +78,19 @@ export async function channelWorkbook(records:AnalysisRecord[], tiles:StudyTile[
  for(const tile of references) for(const [key,value] of Object.entries(tile.settings))ref.addRow([tile.name,key,value.minimum,value.maximum,JSON.stringify(tile.conversion),tile.regionCategory??'Whole tissue',JSON.stringify(tile.rois??[]),tile.groupName??'',tile.sampleId??'',tile.stain??'',JSON.stringify(tile.glomeruli??[])]);
  ref.addRow([]);ref.addRow(['Current group accepted thresholds']);for(const [key,value] of Object.entries(accepted??{}))ref.addRow(['Applied',key,value.minimum,value.maximum]);
  ref.addRow(['Group means average sample reference means equally. 8-bit mean minima rounded to nearest integer; Sirius Red means rounded to 4 decimals.']);
+ const outlines=workbook.addWorksheet('Glomerular outlines');
+ outlines.addRow(['Tile','Sample','Group','Channel','Measurement','Outline','Point','X (source pixels)','Y (source pixels)']);
+ for(const tile of entries)for(const r of tile.records)for(const [i,roi] of (r.analysis.glomeruli??[]).entries())for(const [j,p] of roi.points.entries())outlines.addRow([tile.name,r.sampleId,r.groupName,r.analysis.signalChannel,r.analysis.structureCategory,i+1,j+1,p.x,p.y]);
+ outlines.views=[{state:'frozen',ySplit:1}];outlines.columns.forEach(c=>{c.width=22;});
  const metadata=workbook.addWorksheet('Provenance');metadata.columns=[{width:35},{width:55},{width:100}];metadata.addRow(['Tile','Field','Value']);
  for(const tile of entries) for(const record of tile.records) {
   const add=(prefix:string,value:unknown)=>{
    if(value!==null && typeof value==='object'&&!Array.isArray(value))for(const [key,child] of Object.entries(value))add(prefix?`${prefix}.${key}`:key,child);
-   else metadata.addRow([tile.name,prefix,Array.isArray(value)?JSON.stringify(value):value]);
+   else {
+    const text=Array.isArray(value)?JSON.stringify(value):value;
+    if(typeof text==='string'&&text.length>30000)for(let i=0;i<text.length;i+=30000)metadata.addRow([tile.name,`${prefix} [part ${i/30000+1}]`,text.slice(i,i+30000)]);
+    else metadata.addRow([tile.name,prefix,text]);
+   }
   };add('',record);add('screenshotDisplaySettings',tile.displaySettings??{});
  }
  for(const sheet of [ref,metadata]){sheet.views=[{state:'frozen',ySplit:1}];sheet.getRow(1).font={bold:true};}
